@@ -2,6 +2,11 @@ name: Flutter APK Builder
 
 on:
   workflow_dispatch:
+    inputs:
+      zip_name:
+        description: "ZIP file name"
+        required: true
+        type: string
 
 jobs:
   build:
@@ -24,24 +29,49 @@ jobs:
 
       - name: Extract ZIP
         run: |
-          unzip VinzzProject.zip -d project
+          mkdir project
+          unzip "uploads/${{ github.event.inputs.zip_name }}" -d project
 
-      - name: Show Files
+      - name: Find Flutter Root
+        id: flutter_root
         run: |
-          ls -R project
+          PUBSPEC=$(find project -name pubspec.yaml | head -n 1)
+
+          if [ -z "$PUBSPEC" ]; then
+            echo "pubspec.yaml tidak ditemukan"
+            exit 1
+          fi
+
+          ROOT=$(dirname "$PUBSPEC")
+
+          echo "ROOT=$ROOT" >> $GITHUB_ENV
+
+          echo "Flutter Root:"
+          echo "$ROOT"
 
       - name: Flutter Pub Get
         run: |
-          cd project/VinzzProject
+          cd "$ROOT"
           flutter pub get
 
       - name: Build APK
         run: |
-          cd project/VinzzProject
+          cd "$ROOT"
           flutter build apk --release
+
+      - name: Find APK
+        run: |
+          APK=$(find "$ROOT/build/app/outputs/flutter-apk" -name "*.apk" | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "APK tidak ditemukan"
+            exit 1
+          fi
+
+          echo "APK_PATH=$APK" >> $GITHUB_ENV
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: apk-release
-          path: project/VinzzProject/build/app/outputs/flutter-apk/app-release.apk
+          path: ${{ env.APK_PATH }}
