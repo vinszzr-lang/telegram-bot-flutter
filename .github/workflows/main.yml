@@ -8,35 +8,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - uses: subosito/flutter-action@v2
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.32.0"
 
       - name: Extract ZIP
-        run: unzip VinzzProject.zip -d project
-
-      - name: Find Flutter Project
-        run: ls -la project
-
-      - name: Pub Get
         run: |
-          cd project
+          unzip VinzzProject.zip -d project
+
+      - name: Show Files
+        run: |
+          ls -R project
+
+      - name: Flutter Pub Get
+        run: |
+          cd project/VinzzProject
           flutter pub get
 
       - name: Build APK
         run: |
-          cd project
+          cd project/VinzzProject
           flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: apk
-          path: project/build/app/outputs/flutter-apk/app-release.apk
+          name: apk-release
+          path: project/VinzzProject/build/app/outputs/flutter-apk/app-release.apk
