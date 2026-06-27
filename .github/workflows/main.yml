@@ -22,14 +22,19 @@ jobs:
 
       - name: Extract & Build
         run: |
+          # Cek file ada atau tidak
           if [ ! -f "${{ github.event.inputs.zip_path }}" ]; then
             echo "File tidak ditemukan di ${{ github.event.inputs.zip_path }}"
             exit 1
           fi
 
+          # Ekstrak file
           unzip ${{ github.event.inputs.zip_path }} -d ./project_extracted
+          
+          # Cari folder root yang berisi pubspec.yaml
           PROJECT_ROOT=$(find ./project_extracted -name "pubspec.yaml" -exec dirname {} \;)
           cd $PROJECT_ROOT
+          
           flutter pub get
           flutter build apk --release
 
@@ -37,4 +42,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-release
+          # Menggunakan wildcard agar pasti ketemu APK-nya di mana pun lokasinya
           path: '**/build/app/outputs/flutter-apk/*.apk'
