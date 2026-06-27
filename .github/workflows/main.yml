@@ -8,9 +8,14 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    timeout-minutes: 30
 
     steps:
 
@@ -29,7 +34,7 @@ jobs:
           flutter-version: stable
           cache: true
 
-      - name: Extract Project
+      - name: Extract ZIP
         run: |
 
           if [ ! -f "${{ github.event.inputs.zip_path }}" ]; then
@@ -41,7 +46,7 @@ jobs:
 
           unzip -o "${{ github.event.inputs.zip_path }}" -d project
 
-      - name: Find Flutter Project
+      - name: Find Flutter Root
         id: root
         run: |
 
@@ -67,3 +72,4 @@ jobs:
         with:
           name: app-release
           path: ${{ steps.root.outputs.root }}/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
