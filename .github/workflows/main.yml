@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       zip_path:
-        description: "ZIP Path"
+        description: "Path ZIP Flutter"
         required: true
         type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -19,7 +20,7 @@ jobs:
 
     steps:
 
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Java
@@ -31,17 +32,22 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: stable
-          cache: true
+          channel: stable
 
-      - name: Extract ZIP
+      - name: Flutter Version
+        run: flutter --version
+
+      - name: Check ZIP
         run: |
+          echo "ZIP PATH = ${{ github.event.inputs.zip_path }}"
 
           if [ ! -f "${{ github.event.inputs.zip_path }}" ]; then
-            echo "ZIP tidak ditemukan."
+            echo "ZIP tidak ditemukan!"
             exit 1
           fi
 
+      - name: Extract ZIP
+        run: |
           mkdir project
 
           unzip -o "${{ github.event.inputs.zip_path }}" -d project
@@ -50,14 +56,16 @@ jobs:
         id: root
         run: |
 
-          ROOT=$(find project -name pubspec.yaml -exec dirname {} \; | head -1)
+          ROOT=$(find project -name "pubspec.yaml" -exec dirname {} \; | head -n 1)
 
           if [ -z "$ROOT" ]; then
-            echo "pubspec.yaml tidak ditemukan."
+            echo "pubspec.yaml tidak ditemukan!"
             exit 1
           fi
 
           echo "root=$ROOT" >> $GITHUB_OUTPUT
+
+          echo "Flutter Root = $ROOT"
 
       - name: Flutter Pub Get
         working-directory: ${{ steps.root.outputs.root }}
@@ -67,9 +75,14 @@ jobs:
         working-directory: ${{ steps.root.outputs.root }}
         run: flutter build apk --release
 
+      - name: Show APK
+        run: |
+          find . -name "*.apk"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: ${{ steps.root.outputs.root }}/build/app/outputs/flutter-apk/*.apk
+          path: |
+            **/build/app/outputs/flutter-apk/*.apk
           if-no-files-found: error
