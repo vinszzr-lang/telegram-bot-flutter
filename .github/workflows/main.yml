@@ -1,77 +1,36 @@
-name: Flutter APK Builder
+name: Flutter Build
 
 on:
+  # Pastikan ada bagian ini agar bot bisa memicu build
   workflow_dispatch:
     inputs:
-      zip_name:
-        description: "ZIP file name"
+      zip_path:
+        description: 'Path file ZIP'
         required: true
-        type: string
+        default: 'uploads/project.zip'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
+      - uses: actions/checkout@v3
+      
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.32.0"
-
-      - name: Extract ZIP
-        run: |
-          mkdir project
-          unzip "uploads/${{ github.event.inputs.zip_name }}" -d project
-
-      - name: Find Flutter Root
-        id: flutter_root
-        run: |
-          PUBSPEC=$(find project -name pubspec.yaml | head -n 1)
-
-          if [ -z "$PUBSPEC" ]; then
-            echo "pubspec.yaml tidak ditemukan"
-            exit 1
-          fi
-
-          ROOT=$(dirname "$PUBSPEC")
-
-          echo "ROOT=$ROOT" >> $GITHUB_ENV
-
-          echo "Flutter Root:"
-          echo "$ROOT"
-
-      - name: Flutter Pub Get
-        run: |
-          cd "$ROOT"
-          flutter pub get
+          flutter-version: '3.x'
 
       - name: Build APK
         run: |
-          cd "$ROOT"
+          # Cari lokasi pubspec.yaml secara dinamis
+          PROJECT_ROOT=$(find . -name "pubspec.yaml" -exec dirname {} \;)
+          echo "Building in: $PROJECT_ROOT"
+          cd $PROJECT_ROOT
+          flutter pub get
           flutter build apk --release
 
-      - name: Find APK
-        run: |
-          APK=$(find "$ROOT/build/app/outputs/flutter-apk" -name "*.apk" | head -n 1)
-
-          if [ -z "$APK" ]; then
-            echo "APK tidak ditemukan"
-            exit 1
-          fi
-
-          echo "APK_PATH=$APK" >> $GITHUB_ENV
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: apk-release
-          path: ${{ env.APK_PATH }}
+          name: app-release
+          path: '**/build/app/outputs/flutter-apk/*.apk'
