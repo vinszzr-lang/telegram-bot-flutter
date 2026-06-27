@@ -4,43 +4,66 @@ on:
   workflow_dispatch:
     inputs:
       zip_path:
-        description: 'Path file ZIP hasil upload bot'
+        description: "ZIP Path"
         required: true
-        default: 'uploads/project.zip'
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
+
+      - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.x'
+          flutter-version: stable
+          cache: true
 
-      - name: Extract & Build
+      - name: Extract Project
         run: |
-          # Cek file ada atau tidak
+
           if [ ! -f "${{ github.event.inputs.zip_path }}" ]; then
-            echo "File tidak ditemukan di ${{ github.event.inputs.zip_path }}"
+            echo "ZIP tidak ditemukan."
             exit 1
           fi
 
-          # Ekstrak file
-          unzip ${{ github.event.inputs.zip_path }} -d ./project_extracted
-          
-          # Cari folder root yang berisi pubspec.yaml
-          PROJECT_ROOT=$(find ./project_extracted -name "pubspec.yaml" -exec dirname {} \;)
-          cd $PROJECT_ROOT
-          
-          flutter pub get
-          flutter build apk --release
+          mkdir project
 
-      - name: Upload Artifact
+          unzip -o "${{ github.event.inputs.zip_path }}" -d project
+
+      - name: Find Flutter Project
+        id: root
+        run: |
+
+          ROOT=$(find project -name pubspec.yaml -exec dirname {} \; | head -1)
+
+          if [ -z "$ROOT" ]; then
+            echo "pubspec.yaml tidak ditemukan."
+            exit 1
+          fi
+
+          echo "root=$ROOT" >> $GITHUB_OUTPUT
+
+      - name: Flutter Pub Get
+        working-directory: ${{ steps.root.outputs.root }}
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: ${{ steps.root.outputs.root }}
+        run: flutter build apk --release
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          # Menggunakan wildcard agar pasti ketemu APK-nya di mana pun lokasinya
-          path: '**/build/app/outputs/flutter-apk/*.apk'
+          path: ${{ steps.root.outputs.root }}/build/app/outputs/flutter-apk/*.apk
