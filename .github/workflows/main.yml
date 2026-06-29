@@ -10,7 +10,7 @@ on:
 
 permissions:
   contents: read
-  actions: write # Penting untuk upload artifact
+  actions: write
 
 jobs:
   build:
@@ -32,36 +32,55 @@ jobs:
         with:
           channel: stable
 
-      # --- PERBAIKAN: Download ZIP dari API GitHub ---
+      - name: Flutter Version
+        run: flutter --version
+
+      # --- DOWNLOAD ZIP VIA API (Fix masalah file tidak ditemukan) ---
       - name: Download ZIP from GitHub API
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Ambil data file dari API
+          echo "Mendownload: ${{ github.event.inputs.zip_path }}"
           curl -H "Authorization: token $GH_TOKEN" \
                -H "Accept: application/vnd.github.v3.raw" \
                -L -o source.zip \
                "https://api.github.com/repos/${{ github.repository }}/contents/${{ github.event.inputs.zip_path }}"
           
+          if [ ! -f "source.zip" ]; then
+            echo "Gagal download source.zip!"
+            exit 1
+          fi
+
           mkdir project
           unzip -o source.zip -d project
           rm source.zip
 
+      # --- FIND PROJECT ROOT ---
       - name: Find Flutter Root
         id: root
         run: |
           ROOT=$(find project -name "pubspec.yaml" -exec dirname {} \; | head -n 1)
-          if [ -z "$ROOT" ]; then echo "pubspec.yaml tidak ditemukan!"; exit 1; fi
+          if [ -z "$ROOT" ]; then
+            echo "pubspec.yaml tidak ditemukan!"
+            exit 1
+          fi
           echo "root=$ROOT" >> $GITHUB_OUTPUT
+          echo "Flutter Root = $ROOT"
 
       - name: Flutter Pub Get
         working-directory: ${{ steps.root.outputs.root }}
         run: flutter pub get
 
+      # --- BUILD APK (Split per ABI biar size kecil) ---
       - name: Build APK
         working-directory: ${{ steps.root.outputs.root }}
         run: flutter build apk --release --split-per-abi
 
+      - name: List APKs
+        run: |
+          find . -name "*.apk"
+
+      # --- UPLOAD ARTIFACT ---
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
