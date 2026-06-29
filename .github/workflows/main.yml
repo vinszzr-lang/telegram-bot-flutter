@@ -4,22 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       zip_path:
-        description: "Path ZIP Flutter"
+        description: "Path ZIP Flutter di GitHub"
         required: true
         type: string
 
 permissions:
   contents: read
-  actions: read
+  actions: write # Penting untuk upload artifact
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     timeout-minutes: 30
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -34,38 +32,27 @@ jobs:
         with:
           channel: stable
 
-      - name: Flutter Version
-        run: flutter --version
-
-      - name: Check ZIP
+      # --- PERBAIKAN: Download ZIP dari API GitHub ---
+      - name: Download ZIP from GitHub API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "ZIP PATH = ${{ github.event.inputs.zip_path }}"
-
-          if [ ! -f "${{ github.event.inputs.zip_path }}" ]; then
-            echo "ZIP tidak ditemukan!"
-            exit 1
-          fi
-
-      - name: Extract ZIP
-        run: |
+          # Ambil data file dari API
+          curl -H "Authorization: token $GH_TOKEN" \
+               -H "Accept: application/vnd.github.v3.raw" \
+               -L -o source.zip \
+               "https://api.github.com/repos/${{ github.repository }}/contents/${{ github.event.inputs.zip_path }}"
+          
           mkdir project
-
-          unzip -o "${{ github.event.inputs.zip_path }}" -d project
+          unzip -o source.zip -d project
+          rm source.zip
 
       - name: Find Flutter Root
         id: root
         run: |
-
           ROOT=$(find project -name "pubspec.yaml" -exec dirname {} \; | head -n 1)
-
-          if [ -z "$ROOT" ]; then
-            echo "pubspec.yaml tidak ditemukan!"
-            exit 1
-          fi
-
+          if [ -z "$ROOT" ]; then echo "pubspec.yaml tidak ditemukan!"; exit 1; fi
           echo "root=$ROOT" >> $GITHUB_OUTPUT
-
-          echo "Flutter Root = $ROOT"
 
       - name: Flutter Pub Get
         working-directory: ${{ steps.root.outputs.root }}
@@ -73,11 +60,7 @@ jobs:
 
       - name: Build APK
         working-directory: ${{ steps.root.outputs.root }}
-        run: flutter build apk --release
-
-      - name: Show APK
-        run: |
-          find . -name "*.apk"
+        run: flutter build apk --release --split-per-abi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -86,3 +69,4 @@ jobs:
           path: |
             **/build/app/outputs/flutter-apk/*.apk
           if-no-files-found: error
+          
