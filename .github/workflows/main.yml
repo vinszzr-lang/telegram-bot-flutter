@@ -1,146 +1,74 @@
-name: Flutter Build
+name: Build Flutter APK (zip path OR url)
 
 on:
   workflow_dispatch:
     inputs:
-      zip_path:
-        description: "Path file ZIP Flutter di repository"
+      job_id:
+        description: "ID job dari Telegram"
         required: true
-        type: string
-
-permissions:
-  contents: read
-  actions: write
+      zip_path:
+        description: "Path zip di repo (mis: uploads/xxx.zip). Kosongkan jika pakai zip_url"
+        required: false
+        default: ""
+      zip_url:
+        description: "Direct URL zip. Kosongkan jika pakai zip_path"
+        required: false
+        default: ""
 
 jobs:
   build:
-    name: Build Flutter APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
-      # ======================
-      # CHECKOUT
-      # ======================
-      - name: Checkout Repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      # ======================
-      # JAVA
-      # ======================
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # ======================
-      # FLUTTER
-      # ======================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
 
-      - name: Check Flutter
-        run: flutter --version
-
-      # ======================
-      # DOWNLOAD ZIP
-      # ======================
-      - name: Download ZIP
-        env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare workspace
         run: |
+          set -e
+          mkdir -p work
+          cd work
 
-          ZIP="${{ github.event.inputs.zip_path }}"
-
-          echo "ZIP = $ZIP"
-
-          curl \
-          -L \
-          -H "Authorization: Bearer $TOKEN" \
-          -H "Accept: application/vnd.github.raw" \
-          "https://api.github.com/repos/${{ github.repository }}/contents/$ZIP" \
-          -o source.zip
-
-          if [ ! -f source.zip ]; then
-            echo "ZIP gagal didownload"
+          if [ -n "${{ inputs.zip_url }}" ]; then
+            echo "MODE: zip_url"
+            curl -L --fail --retry 3 --retry-delay 2 "${{ inputs.zip_url }}" -o project.zip
+          elif [ -n "${{ inputs.zip_path }}" ]; then
+            echo "MODE: zip_path"
+            cp "../${{ inputs.zip_path }}" project.zip
+          else
+            echo "ERROR: zip_url atau zip_path wajib diisi."
             exit 1
           fi
 
-      # ======================
-      # EXTRACT
-      # ======================
-      - name: Extract ZIP
-        run: |
+          unzip -q project.zip -d project
 
-          mkdir project
-
-          unzip -o source.zip -d project
-
-          rm source.zip
-
-      # ======================
-      # FIND ROOT
-      # ======================
-      - name: Find Flutter Project
-        id: root
-        run: |
-
-          ROOT=$(find project -name pubspec.yaml | head -n 1)
-
-          if [ -z "$ROOT" ]; then
-            echo "pubspec.yaml tidak ditemukan"
-            exit 1
-          fi
-
-          ROOT=$(dirname "$ROOT")
-
-          echo "root=$ROOT" >> $GITHUB_OUTPUT
-
-          echo "ROOT=$ROOT"
-
-      # ======================
-      # PUB GET
-      # ======================
-      - name: Install Dependency
-        working-directory: ${{ steps.root.outputs.root }}
+      - name: Flutter pub get
+        working-directory: work/project
         run: flutter pub get
 
-      # ======================
-      # BUILD APK
-      # ======================
-      - name: Build APK
-        working-directory: ${{ steps.root.outputs.root }}
+      - name: Build APK (release)
+        working-directory: work/project
+        run: flutter build apk --release
+
+      - name: Collect outputs
         run: |
+          mkdir -p out
+          cp work/project/build/app/outputs/flutter-apk/app-release.apk "out/app-release-${{ inputs.job_id }}.apk"
 
-          flutter build apk \
-          --release \
-          --split-per-abi
-
-      # ======================
-      # CHECK APK
-      # ======================
-      - name: Verify APK
-        run: |
-
-          APK=$(find . -name "*.apk")
-
-          echo "$APK"
-
-          if [ -z "$APK" ]; then
-            exit 1
-          fi
-
-      # ======================
-      # UPLOAD
-      # ======================
-      - name: Upload APK
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-apk
-          path: |
-            **/build/app/outputs/flutter-apk/*.apk
-          if-no-files-found: error
-          retention-days: 7
+          name: apk-${{ inputs.job_id }}
+          path: out/*.apk
