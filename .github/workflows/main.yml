@@ -1,26 +1,30 @@
-name: Build Flutter APK (zip path OR url)
+name: Flutter Build
 
 on:
   workflow_dispatch:
     inputs:
-      job_id:
-        description: "ID job dari Telegram"
-        required: true
       zip_path:
-        description: "Path zip di repo (mis: uploads/xxx.zip). Kosongkan jika pakai zip_url"
+        description: "Path ZIP project"
+        required: true
+      job_id:
+        description: "Job ID"
         required: false
         default: ""
       zip_url:
-        description: "Direct URL zip. Kosongkan jika pakai zip_path"
+        description: "URL"
         required: false
         default: ""
+
+permissions:
+  contents: read
+  actions: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Java
@@ -32,43 +36,66 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.35.0"
           channel: stable
-          cache: true
 
-      - name: Prepare workspace
+      - name: Check ZIP
+        env:
+          ZIP_PATH: ${{ github.event.inputs.zip_path }}
         run: |
-          set -e
-          mkdir -p work
-          cd work
-
-          if [ -n "${{ inputs.zip_url }}" ]; then
-            echo "MODE: zip_url"
-            curl -L --fail --retry 3 --retry-delay 2 "${{ inputs.zip_url }}" -o project.zip
-          elif [ -n "${{ inputs.zip_path }}" ]; then
-            echo "MODE: zip_path"
-            cp "../${{ inputs.zip_path }}" project.zip
-          else
-            echo "ERROR: zip_url atau zip_path wajib diisi."
+          echo "Checking path: $ZIP_PATH"
+          if [ ! -f "$ZIP_PATH" ]; then
+            echo "ZIP tidak ditemukan di $ZIP_PATH!"
             exit 1
           fi
 
-          unzip -q project.zip -d project
+      - name: Extract ZIP
+        env:
+          ZIP_PATH: ${{ github.event.inputs.zip_path }}
+        run: |
+          mkdir flutter-project
+          unzip -q "$ZIP_PATH" -d flutter-project
 
-      - name: Flutter pub get
-        working-directory: work/project
+      - name: Find Flutter Root
+        id: root
+        run: |
+          # Cari folder yang mengandung pubspec.yaml
+          ROOT=$(find flutter-project -name pubspec.yaml | head -1)
+          if [ -z "$ROOT" ]; then
+            echo "Flutter project (pubspec.yaml) tidak ditemukan"
+            exit 1
+          fi
+          ROOT=$(dirname "$ROOT")
+          echo "root=$ROOT" >> $GITHUB_OUTPUT
+          echo "Project found at: $ROOT"
+
+      - name: Flutter Pub Get
+        working-directory: ${{ steps.root.outputs.root }}
         run: flutter pub get
 
-      - name: Build APK (release)
-        working-directory: work/project
+      - name: Build APK
+        working-directory: ${{ steps.root.outputs.root }}
         run: flutter build apk --release
 
-      - name: Collect outputs
+      - name: Verify & Rename APK
+        working-directory: ${{ steps.root.outputs.root }}
         run: |
-          mkdir -p out
-          cp work/project/build/app/outputs/flutter-apk/app-release.apk "out/app-release-${{ inputs.job_id }}.apk"
+          # Cek lokasi APK hasil build
+          APK_SRC=build/app/outputs/flutter-apk/app-release.apk
+          if [ ! -f "$APK_SRC" ]; then
+            echo "APK gagal dibuat!"
+            exit 1
+          fi
+          # Rename agar unik berdasarkan job_id jika ada
+          JOB_ID="${{ github.event.inputs.job_id }}"
+          TARGET_NAME="app-${JOB_ID:-default}.apk"
+          mv "$APK_SRC" "../$TARGET_NAME"
+          echo "APK_PATH=$TARGET_NAME" >> $GITHUB_ENV
 
-      - name: Upload artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ inputs.job_id }}
-          path: out/*.apk
+          name: flutter-apk-${{ github.event.inputs.job_id }}
+          path: ${{ env.APK_PATH }}
+          retention-days: 1
+          
