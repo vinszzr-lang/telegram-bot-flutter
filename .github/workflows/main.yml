@@ -1,4 +1,4 @@
-name: Flutter Build
+name: Build Flutter APK
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
       job_id:
         description: "Job ID"
         required: false
-        default: ""
+        default: "default"
       zip_url:
         description: "URL"
         required: false
@@ -30,44 +30,41 @@ jobs:
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "17"
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.35.0"
-          channel: stable
-
-      - name: Check ZIP
-        env:
-          ZIP_PATH: ${{ github.event.inputs.zip_path }}
-        run: |
-          echo "Checking path: $ZIP_PATH"
-          if [ ! -f "$ZIP_PATH" ]; then
-            echo "ZIP tidak ditemukan di $ZIP_PATH!"
-            exit 1
-          fi
+          channel: 'stable'
 
       - name: Extract ZIP
         env:
           ZIP_PATH: ${{ github.event.inputs.zip_path }}
         run: |
-          mkdir flutter-project
-          unzip -q "$ZIP_PATH" -d flutter-project
+          if [ -f "$ZIP_PATH" ]; then
+            mkdir flutter-project
+            unzip -q "$ZIP_PATH" -d flutter-project
+          else
+            echo "Error: ZIP file not found at $ZIP_PATH"
+            exit 1
+          fi
 
       - name: Find Flutter Root
         id: root
         run: |
-          # Cari folder yang mengandung pubspec.yaml
           ROOT=$(find flutter-project -name pubspec.yaml | head -1)
           if [ -z "$ROOT" ]; then
-            echo "Flutter project (pubspec.yaml) tidak ditemukan"
+            echo "Error: Flutter project (pubspec.yaml) not found"
             exit 1
           fi
-          ROOT=$(dirname "$ROOT")
-          echo "root=$ROOT" >> $GITHUB_OUTPUT
-          echo "Project found at: $ROOT"
+          echo "root=$(dirname $ROOT)" >> $GITHUB_OUTPUT
+
+      # STEP PENTING: Generate local.properties agar Gradle bisa baca Flutter SDK
+      - name: Generate local.properties
+        working-directory: ${{ steps.root.outputs.root }}/android
+        run: |
+          echo "flutter.sdk=$FLUTTER_ROOT" > local.properties
 
       - name: Flutter Pub Get
         working-directory: ${{ steps.root.outputs.root }}
@@ -77,25 +74,10 @@ jobs:
         working-directory: ${{ steps.root.outputs.root }}
         run: flutter build apk --release
 
-      - name: Verify & Rename APK
-        working-directory: ${{ steps.root.outputs.root }}
-        run: |
-          # Cek lokasi APK hasil build
-          APK_SRC=build/app/outputs/flutter-apk/app-release.apk
-          if [ ! -f "$APK_SRC" ]; then
-            echo "APK gagal dibuat!"
-            exit 1
-          fi
-          # Rename agar unik berdasarkan job_id jika ada
-          JOB_ID="${{ github.event.inputs.job_id }}"
-          TARGET_NAME="app-${JOB_ID:-default}.apk"
-          mv "$APK_SRC" "../$TARGET_NAME"
-          echo "APK_PATH=$TARGET_NAME" >> $GITHUB_ENV
-
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-apk-${{ github.event.inputs.job_id }}
-          path: ${{ env.APK_PATH }}
+          name: apk-${{ github.event.inputs.job_id }}
+          path: ${{ steps.root.outputs.root }}/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 1
           
