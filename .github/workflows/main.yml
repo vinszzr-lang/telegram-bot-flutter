@@ -22,26 +22,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: 'gradle' # Mempercepat build berikutnya dengan caching gradle
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          # Mengunci versi flutter (opsional, tapi disarankan agar konsisten)
-          # flutter-version: '3.22.0' 
-
       - name: Download & Extract ZIP Project
         run: |
           mkdir flutter-project
           echo "Downloading ZIP from: ${{ github.event.inputs.zip_url }}"
           
-          # Download file zip menggunakan curl
           curl -L -o project.zip "${{ github.event.inputs.zip_url }}"
           
           if [ -f "project.zip" ]; then
@@ -55,7 +40,6 @@ jobs:
       - name: Find Flutter Root Directory
         id: root
         run: |
-          # Mencari letak pubspec.yaml pertama
           ROOT_PATH=$(find flutter-project -name pubspec.yaml | head -1)
           if [ -z "$ROOT_PATH" ]; then
             echo "❌ Error: Flutter project (pubspec.yaml) tidak ditemukan di dalam ZIP."
@@ -65,10 +49,21 @@ jobs:
           echo "Project root ditemukan di: $REAL_ROOT"
           echo "root=$REAL_ROOT" >> $GITHUB_OUTPUT
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          # Cache diapus dulu biar ga bawel nyari file gradle di repo kosong
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
       - name: Generate local.properties
         working-directory: ${{ steps.root.outputs.root }}/android
         run: |
-          # Menggunakan command 'which flutter' untuk mendapatkan letak SDK Flutter yang valid di runner
           FLUTTER_BIN=$(which flutter)
           FLUTTER_DIR=$(dirname $(dirname "$FLUTTER_BIN"))
           echo "flutter.sdk=$FLUTTER_DIR" > local.properties
@@ -86,7 +81,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ github.event.inputs.job_id }}
-          # Path diubah mencakup seluruh hasil split APK atau single APK agar aman
           path: ${{ steps.root.outputs.root }}/build/app/outputs/flutter-apk/*.apk
           retention-days: 1
           
