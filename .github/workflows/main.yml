@@ -3,17 +3,12 @@ name: Build Flutter APK
 on:
   workflow_dispatch:
     inputs:
-      zip_path:
-        description: "Path ZIP project"
-        required: true
       job_id:
-        description: "Job ID"
-        required: false
-        default: "default"
+        description: "Job ID dari Spark Builder"
+        required: true
       zip_url:
-        description: "URL"
-        required: false
-        default: ""
+        description: "URL download ZIP dari server Express"
+        required: true
 
 permissions:
   contents: read
@@ -32,52 +27,66 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
+          cache: 'gradle' # Mempercepat build berikutnya dengan caching gradle
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          # Mengunci versi flutter (opsional, tapi disarankan agar konsisten)
+          # flutter-version: '3.22.0' 
 
-      - name: Extract ZIP
-        env:
-          ZIP_PATH: ${{ github.event.inputs.zip_path }}
+      - name: Download & Extract ZIP Project
         run: |
-          if [ -f "$ZIP_PATH" ]; then
-            mkdir flutter-project
-            unzip -q "$ZIP_PATH" -d flutter-project
+          mkdir flutter-project
+          echo "Downloading ZIP from: ${{ github.event.inputs.zip_url }}"
+          
+          # Download file zip menggunakan curl
+          curl -L -o project.zip "${{ github.event.inputs.zip_url }}"
+          
+          if [ -f "project.zip" ]; then
+            unzip -q "project.zip" -d flutter-project
+            rm project.zip
           else
-            echo "Error: ZIP file not found at $ZIP_PATH"
+            echo "❌ Error: Gagal mendownload ZIP dari server."
             exit 1
           fi
 
-      - name: Find Flutter Root
+      - name: Find Flutter Root Directory
         id: root
         run: |
-          ROOT=$(find flutter-project -name pubspec.yaml | head -1)
-          if [ -z "$ROOT" ]; then
-            echo "Error: Flutter project (pubspec.yaml) not found"
+          # Mencari letak pubspec.yaml pertama
+          ROOT_PATH=$(find flutter-project -name pubspec.yaml | head -1)
+          if [ -z "$ROOT_PATH" ]; then
+            echo "❌ Error: Flutter project (pubspec.yaml) tidak ditemukan di dalam ZIP."
             exit 1
           fi
-          echo "root=$(dirname $ROOT)" >> $GITHUB_OUTPUT
+          REAL_ROOT=$(dirname "$ROOT_PATH")
+          echo "Project root ditemukan di: $REAL_ROOT"
+          echo "root=$REAL_ROOT" >> $GITHUB_OUTPUT
 
-      # STEP PENTING: Generate local.properties agar Gradle bisa baca Flutter SDK
       - name: Generate local.properties
         working-directory: ${{ steps.root.outputs.root }}/android
         run: |
-          echo "flutter.sdk=$FLUTTER_ROOT" > local.properties
+          # Menggunakan command 'which flutter' untuk mendapatkan letak SDK Flutter yang valid di runner
+          FLUTTER_BIN=$(which flutter)
+          FLUTTER_DIR=$(dirname $(dirname "$FLUTTER_BIN"))
+          echo "flutter.sdk=$FLUTTER_DIR" > local.properties
+          echo "✓ Berhasil generate local.properties"
 
       - name: Flutter Pub Get
         working-directory: ${{ steps.root.outputs.root }}
         run: flutter pub get
 
-      - name: Build APK
+      - name: Build Production APK
         working-directory: ${{ steps.root.outputs.root }}
-        run: flutter build apk --release
+        run: flutter build apk --release --split-per-abi
 
-      - name: Upload Artifact
+      - name: Upload Artifact to GitHub
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ github.event.inputs.job_id }}
-          path: ${{ steps.root.outputs.root }}/build/app/outputs/flutter-apk/app-release.apk
+          # Path diubah mencakup seluruh hasil split APK atau single APK agar aman
+          path: ${{ steps.root.outputs.root }}/build/app/outputs/flutter-apk/*.apk
           retention-days: 1
           
