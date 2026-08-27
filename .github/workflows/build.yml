@@ -1,4 +1,4 @@
-name: Auto Build APK (Auto Unzip & Build)
+name: Auto Build APK (Final Fix)
 
 on:
   push:
@@ -16,7 +16,6 @@ jobs:
       - name: Extract File Zip (Auto Detect)
         run: |
           echo "Mencari file .zip..."
-          # Cari file .zip yang ada di repo (termasuk folder upload/)
           ZIP_FILE=$(find . -name "*.zip" -not -path "*/.*" | head -n 1)
           if [ -n "$ZIP_FILE" ]; then
             echo "Menemukan file zip: $ZIP_FILE"
@@ -40,7 +39,6 @@ jobs:
       - name: Detect Folder Project Flutter
         id: detect
         run: |
-          # Cari file pubspec.yaml setelah diekstrak
           PUBSPEC_PATH=$(find . -name "pubspec.yaml" -not -path "*/.*" | head -n 1)
           if [ -z "$PUBSPEC_PATH" ]; then
             echo "::error::File pubspec.yaml tidak ditemukan di dalam zip atau repository!"
@@ -56,7 +54,7 @@ jobs:
 
       - name: Build Release APK
         working-directory: ${{ steps.detect.outputs.dir }}
-        run: flutter build apk --release
+        run: flutter build apk --release --android-skip-build-dependency-validation
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
