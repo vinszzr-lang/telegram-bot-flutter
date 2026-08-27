@@ -1,4 +1,4 @@
-name: Auto Build APK (Final Fix)
+name: Auto Build APK (Fix Missing Icon)
 
 on:
   push:
@@ -47,6 +47,26 @@ jobs:
           PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
           echo "Project Flutter ditemukan di: $PROJECT_DIR"
           echo "dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
+
+      - name: Generate Dummy Launcher Icons (Auto Fix AAPT Error)
+        working-directory: ${{ steps.detect.outputs.dir }}
+        run: |
+          echo "Membuat folder dan file icon dummy jika kosong..."
+          RES_DIR="android/app/src/main/res"
+          
+          # Daftar folder mipmap
+          MIPMAP_DIRS=("mipmap-hdpi" "mipmap-mdpi" "mipmap-xhdpi" "mipmap-xxhdpi" "mipmap-xxxhdpi")
+          
+          for dir in "${MIPMAP_DIRS[@]}"; do
+            TARGET_DIR="$RES_DIR/$dir"
+            mkdir -p "$TARGET_DIR"
+            
+            # Jika ic_launcher.png tidak ada, buat gambar dummy 1x1 transparan
+            if [ ! -f "$TARGET_DIR/ic_launcher.png" ]; then
+              echo "Creating dummy icon in $TARGET_DIR"
+              echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" | base64 -d > "$TARGET_DIR/ic_launcher.png"
+            fi
+          done
 
       - name: Install Dependencies
         working-directory: ${{ steps.detect.outputs.dir }}
