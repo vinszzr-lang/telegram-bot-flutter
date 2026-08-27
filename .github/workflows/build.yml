@@ -1,4 +1,4 @@
-name: Auto Build APK (Auto Detect)
+name: Auto Build APK (Auto Unzip & Build)
 
 on:
   push:
@@ -13,6 +13,19 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Extract File Zip (Auto Detect)
+        run: |
+          echo "Mencari file .zip..."
+          # Cari file .zip yang ada di repo (termasuk folder upload/)
+          ZIP_FILE=$(find . -name "*.zip" -not -path "*/.*" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Menemukan file zip: $ZIP_FILE"
+            echo "Mengekstrak..."
+            unzip -o "$ZIP_FILE" -d ./extracted_project
+          else
+            echo "Tidak ada file .zip, melanjutkan dengan folder biasa..."
+          fi
+
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -24,17 +37,17 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Cari & Detect Folder Project Flutter
+      - name: Detect Folder Project Flutter
         id: detect
         run: |
-          # Cari lokasi file pubspec.yaml otomatis
+          # Cari file pubspec.yaml setelah diekstrak
           PUBSPEC_PATH=$(find . -name "pubspec.yaml" -not -path "*/.*" | head -n 1)
           if [ -z "$PUBSPEC_PATH" ]; then
-            echo "::error::File pubspec.yaml tidak ditemukan di repository ini!"
+            echo "::error::File pubspec.yaml tidak ditemukan di dalam zip atau repository!"
             exit 1
           fi
           PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
-          echo "Project ditemukan di folder: $PROJECT_DIR"
+          echo "Project Flutter ditemukan di: $PROJECT_DIR"
           echo "dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
 
       - name: Install Dependencies
