@@ -1,4 +1,4 @@
-name: Auto Build APK
+name: Auto Build APK (Auto Detect)
 
 on:
   push:
@@ -24,15 +24,30 @@ jobs:
         with:
           channel: 'stable'
 
+      - name: Cari & Detect Folder Project Flutter
+        id: detect
+        run: |
+          # Cari lokasi file pubspec.yaml otomatis
+          PUBSPEC_PATH=$(find . -name "pubspec.yaml" -not -path "*/.*" | head -n 1)
+          if [ -z "$PUBSPEC_PATH" ]; then
+            echo "::error::File pubspec.yaml tidak ditemukan di repository ini!"
+            exit 1
+          fi
+          PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
+          echo "Project ditemukan di folder: $PROJECT_DIR"
+          echo "dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
+
       - name: Install Dependencies
+        working-directory: ${{ steps.detect.outputs.dir }}
         run: flutter pub get
 
       - name: Build Release APK
+        working-directory: ${{ steps.detect.outputs.dir }}
         run: flutter build apk --release
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Simtudduror-Release-APK
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: '**/build/app/outputs/flutter-apk/app-release.apk'
           
