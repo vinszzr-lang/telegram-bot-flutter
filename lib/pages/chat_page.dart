@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:gallery_saver_plus/gallery_saver.dart';
+import 'dart:typed_data';
+import 'package:http/http.dart' as http;
+import 'package:saver_gallery/saver_gallery.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -517,10 +519,88 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _download(String url, dynamic type) async {
     if (url.isEmpty) return;
     try {
-      final allowed = await _requestGalleryPermission(video: type == 'video');
-      if (!allowed) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Izin galeri diperlukan untuk menyimpan media.'))); return; }
-      final ok = type == 'video' ? await GallerySaver.saveVideo(url) : await GallerySaver.saveImage(url);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok == true ? 'Media disimpan ke galeri.' : 'Gagal menyimpan media.')));
-    } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal menyimpan: $e'))); }
+      final isVideo = type == 'video';
+      final allowed = await _requestGalleryPermission(video: isVideo);
+      if (!allowed) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Izin galeri diperlukan untuk menyimpan media.')),
+          );
+        }
+        return;
+      }
+
+      final uri = Uri.tryParse(url);
+      if (uri == null || !(uri.scheme == 'http' || uri.scheme == 'https')) {
+        throw Exception('URL media tidak valid');
+      }
+
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      if (!isVideo) {
+        final response = await http.get(uri);
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          throw Exception('Server mengembalikan HTTP ${response.statusCode}');
+        }
+
+        final contentType = response.headers['content-type'] ?? '';
+        final extension = contentType.contains('png') ? 'png'
+            : contentType.contains('webp') ? 'webp'
+            : contentType.contains('gif') ? 'gif'
+            : 'jpg';
+        final result = await SaverGallery.saveImage(
+          Uint8List.fromList(response.bodyBytes),
+          fileName: 'ChatWithU_$timestamp.$extension',
+          androidRelativePath: 'Pictures/ChatWithU',
+          skipIfExists: false,
+        );
+
+        if (!result.isSuccess) {
+          throw Exception(result.errorMessage ?? 'Gagal menyimpan gambar');
+        }
+      } else {
+        final client = http.Client();
+        try {
+          final request = http.Request('GET', uri);
+          final response = await client.send(request);
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            throw Exception('Server mengembalikan HTTP ${response.statusCode}');
+          }
+
+          final tempDir = await Directory.systemTemp.createTemp('chatwithu_');
+          final tempFile = File('${tempDir.path}/ChatWithU_$timestamp.mp4');
+          final sink = tempFile.openWrite();
+          await response.stream.pipe(sink);
+
+          try {
+            final result = await SaverGallery.saveFile(
+              filePath: tempFile.path,
+              fileName: 'ChatWithU_$timestamp.mp4',
+              androidRelativePath: 'Movies/ChatWithU',
+              skipIfExists: false,
+            );
+            if (!result.isSuccess) {
+              throw Exception(result.errorMessage ?? 'Gagal menyimpan video');
+            }
+          } finally {
+            await tempFile.delete().catchError((_) {});
+            await tempDir.delete().catchError((_) {});
+          }
+        } finally {
+          client.close();
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Media disimpan ke galeri.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Gagal menyimpan: $e')),
+        );
+      }
+    }
   }
 }
