@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/api.dart';
 import '../services/session.dart';
 import '../utils/navigation.dart';
+import '../utils/db.dart';
 import '../widgets/verified_badge.dart';
 import 'add_contact_page.dart';
 import 'banned_page.dart';
@@ -24,6 +25,7 @@ class _HomePageState extends State<HomePage> with RouteAware {
   bool syncing = false;
   bool routeSubscribed = false;
   String search = '';
+  final Map<String, DateTime?> _readAt = {};
 
   @override
   void initState() {
@@ -74,6 +76,15 @@ class _HomePageState extends State<HomePage> with RouteAware {
       final next = <String, Map<String, dynamic>>{};
       _mergeInto(next, data['contacts']);
       _mergeInto(next, data['inbox']);
+      for (final entry in next.entries) {
+        final marker = await LocalCache.readAt(entry.key);
+        _readAt[entry.key] = marker;
+        final lastRaw = entry.value['lastMessageAt']?.toString();
+        final last = lastRaw == null ? null : DateTime.tryParse(lastRaw)?.toUtc();
+        if (marker != null && last != null && !last.isAfter(marker)) {
+          entry.value['unread'] = 0;
+        }
+      }
       contactMap
         ..clear()
         ..addAll(next);
@@ -161,7 +172,17 @@ class _HomePageState extends State<HomePage> with RouteAware {
       title: Row(children: [Flexible(child: Text(name, style: const TextStyle(fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis)), if (verified) const Padding(padding: EdgeInsets.only(left: 5), child: VerifiedBadge())]),
       subtitle: Text(c['lastMessage']?.toString().isNotEmpty == true ? c['lastMessage'].toString() : '@$u', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white54)),
       trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [if (c['lastMessageAt'] != null) Text(_listTime(c['lastMessageAt']), style: const TextStyle(fontSize: 11, color: Colors.white54)), if ((c['unread'] ?? 0) > 0) Container(margin: const EdgeInsets.only(top: 5), padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3), decoration: BoxDecoration(color: const Color(0xFF6C4DFF), borderRadius: BorderRadius.circular(20)), child: Text('${c['unread']}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)))]),
-      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ChatPage(session: widget.session, contact: c))).then((_) => refresh()),
+      onTap: () async {
+        final lastRaw = c['lastMessageAt']?.toString();
+        final last = lastRaw == null ? DateTime.now().toUtc() : DateTime.tryParse(lastRaw)?.toUtc() ?? DateTime.now().toUtc();
+        _readAt[u] = last;
+        c['unread'] = 0;
+        if (mounted) setState(() {});
+        await LocalCache.markRead(u, last.toIso8601String());
+        if (!mounted) return;
+        await Navigator.push(context, MaterialPageRoute(builder: (_) => ChatPage(session: widget.session, contact: c)));
+        await refresh();
+      },
     );
   }
 

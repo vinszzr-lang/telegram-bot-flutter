@@ -6,7 +6,7 @@ Flutter Android client for ChatWithU.
 `com.vinzz.chatwithu`
 
 ## Current update
-Version `1.2.0+4`.
+Version `1.3.0+5`.
 
 ### Realtime
 - Socket.IO has been removed from the Android client for a simpler and more stable connection model.
@@ -21,6 +21,7 @@ Version `1.2.0+4`.
 - Username collisions are rejected.
 
 ### Media
+- Attachment flow is now closer to WhatsApp: `Galeri` opens one native image/video picker, while `Dokumen` opens the Android document picker.
 - Photo/video upload max 50 MB.
 - Generic file picker is supported with a 50 MB client-side limit.
 - Photo/video picking uses the native Android picker.
@@ -31,6 +32,11 @@ Version `1.2.0+4`.
 - Text messages use an optimistic local bubble immediately.
 - The local `sending` bubble is reconciled with the server message instead of being removed/re-added.
 - The status icon transitions with a short animation, preventing the bubble from jumping when the 1-second poll and POST response race each other.
+
+### Chat UI and keyboard
+- The chat wallpaper is fixed to the screen and no longer jumps upward when the keyboard opens.
+- The composer is overlaid above the keyboard instead of resizing/repositioning the wallpaper.
+- Opening a chat immediately clears its local unread badge; a newer message received afterward can create the badge again without a manual refresh.
 
 ### Time and chat layout
 - Server UTC timestamps are converted to the device's local time.

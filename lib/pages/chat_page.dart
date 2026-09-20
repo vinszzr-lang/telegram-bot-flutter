@@ -31,6 +31,8 @@ class _ChatPageState extends State<ChatPage> {
   final scroll = ScrollController();
   final picker = ImagePicker();
   Timer? pollTimer;
+  Timer? profileTimer;
+  bool syncingProfile = false;
   List<Map<String, dynamic>> messages = [];
   bool sendingMedia = false;
   bool syncing = false;
@@ -47,13 +49,50 @@ class _ChatPageState extends State<ChatPage> {
     // Socket.IO is intentionally not used. The chat stays near-real-time by
     // polling the incremental messages endpoint once per second.
     pollTimer = Timer.periodic(const Duration(seconds: 1), (_) => syncMessages());
+    // Keep the verified badge live. If an account is verified/unverified on
+    // the server while this chat is open, the blue badge updates immediately
+    // without requiring a manual refresh or leaving/re-entering the chat.
+    profileTimer = Timer.periodic(const Duration(seconds: 1), (_) => syncContactProfile());
   }
 
   Future<void> load() async {
+    await LocalCache.markRead(username, DateTime.now().toUtc().toIso8601String());
     final local = await LocalCache.messages(username);
     if (mounted && local.isNotEmpty) setState(() => messages = local);
     await syncMessages(full: true);
     _bottom(jump: true);
+  }
+
+  Future<void> syncContactProfile() async {
+    if (syncingProfile || widget.session.token == null) return;
+    syncingProfile = true;
+    try {
+      final user = await api.findUser(widget.session.token!, username);
+      final nextVerified = user['verified'] == true;
+      final nextName = (user['name'] ?? user['displayName'] ?? displayName).toString();
+      final nextAvatar = (user['avatarUrl'] ?? avatarUrl).toString();
+      final changed = nextVerified != verified || nextName != displayName || nextAvatar != avatarUrl;
+      if (changed && mounted) {
+        setState(() {
+          verified = nextVerified;
+          displayName = nextName;
+          avatarUrl = nextAvatar;
+        });
+      }
+      // Keep the contact map passed around by HomePage current too, so when
+      // the user goes back the list does not need a manual refresh to reflect
+      // the badge state.
+      widget.contact['verified'] = nextVerified;
+      widget.contact['name'] = nextName;
+      widget.contact['displayName'] = nextName;
+      widget.contact['avatarUrl'] = nextAvatar;
+    } on ApiException catch (e) {
+      if (e.status == 403) _showBanned();
+    } catch (_) {
+      // A temporary profile request failure must never interrupt chat polling.
+    } finally {
+      syncingProfile = false;
+    }
   }
 
   Future<void> syncMessages({bool full = false}) async {
@@ -70,7 +109,11 @@ class _ChatPageState extends State<ChatPage> {
           final d = DateTime.tryParse(raw?.toString() ?? '');
           if (d != null && (newest == null || d.isAfter(newest))) newest = d;
         }
-        if (newest != null) lastCursor = newest.toUtc().toIso8601String();
+        if (newest != null) {
+          final readIso = newest.toUtc().toIso8601String();
+          lastCursor = readIso;
+          await LocalCache.markRead(username, readIso);
+        }
       }
       await LocalCache.saveMessages(username, messages);
       if (changed) {
@@ -80,7 +123,7 @@ class _ChatPageState extends State<ChatPage> {
     } on ApiException catch (e) {
       if (e.status == 403) _showBanned();
     } catch (_) {
-      // Socket.IO remains the primary real-time channel.
+      // Polling is the realtime transport used by this client.
     } finally {
       syncing = false;
     }
@@ -184,6 +227,7 @@ class _ChatPageState extends State<ChatPage> {
       // stable even when the 1-second poll wins the race with this POST.
       _mergeMessages([result]);
       await LocalCache.saveMessages(username, messages);
+      await LocalCache.markRead(username, DateTime.now().toUtc().toIso8601String());
       if (mounted) setState(() {});
       _bottom();
     } on ApiException catch (e) {
@@ -205,28 +249,45 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> sendMedia() async {
     final choice = await showModalBottomSheet<String>(
       context: context,
-      backgroundColor: const Color(0xFF151217),
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_outlined),
-              title: const Text('Pilih foto'),
-              onTap: () => Navigator.pop(context, 'image'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.videocam_outlined),
-              title: const Text('Pilih video'),
-              onTap: () => Navigator.pop(context, 'video'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.insert_drive_file_outlined),
-              title: const Text('Pilih file'),
-              subtitle: const Text('Maksimal 50 MB'),
-              onTap: () => Navigator.pop(context, 'file'),
-            ),
-          ],
+      backgroundColor: const Color(0xFF151B1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 42,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 10),
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+              ),
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Color(0xFF263A33),
+                  child: Icon(Icons.photo_library_outlined),
+                ),
+                title: const Text('Galeri'),
+                subtitle: const Text('Foto atau video'),
+                onTap: () => Navigator.pop(sheetContext, 'gallery'),
+              ),
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Color(0xFF30343A),
+                  child: Icon(Icons.insert_drive_file_outlined),
+                ),
+                title: const Text('Dokumen'),
+                subtitle: const Text('File hingga 50 MB'),
+                onTap: () => Navigator.pop(sheetContext, 'file'),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -234,32 +295,39 @@ class _ChatPageState extends State<ChatPage> {
 
     File? file;
     String fileName = '';
+    String type = 'file';
     try {
-      if (choice == 'image') {
-        final picked = await picker.pickImage(
-          source: ImageSource.gallery,
+      if (choice == 'gallery') {
+        // pickMedia behaves like the WhatsApp gallery flow: one native
+        // Android picker can return either an image or a video.
+        final picked = await picker.pickMedia(
           imageQuality: 92,
           maxWidth: 2400,
+          maxHeight: 2400,
         );
         if (picked == null) return;
         file = File(picked.path);
         fileName = picked.name;
-      } else if (choice == 'video') {
-        final picked = await picker.pickVideo(
-          source: ImageSource.gallery,
-          maxDuration: const Duration(minutes: 10),
-        );
-        if (picked == null) return;
-        file = File(picked.path);
-        fileName = picked.name;
+        final mime = (picked.mimeType ?? '').toLowerCase();
+        type = mime.startsWith('video/') ? 'video' : 'image';
+        if (mime.isEmpty) {
+          final lower = fileName.toLowerCase();
+          type = (lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.endsWith('.mkv') || lower.endsWith('.webm')) ? 'video' : 'image';
+        }
       } else {
-        final picked = await FilePicker.pickFile();
-        if (picked == null || picked.path == null) return;
-        file = File(picked.path!);
-        fileName = picked.name;
+        final picked = await FilePicker.platform.pickFiles(
+          allowMultiple: false,
+          withData: false,
+        );
+        if (picked == null || picked.files.single.path == null) return;
+        file = File(picked.files.single.path!);
+        fileName = picked.files.single.name;
+        type = 'file';
       }
 
-      final bytes = await file.length();
+      final selectedFile = file;
+      if (selectedFile == null) return;
+      final bytes = await selectedFile.length();
       if (bytes > 50 * 1024 * 1024) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -274,11 +342,12 @@ class _ChatPageState extends State<ChatPage> {
       final result = await api.uploadMedia(
         widget.session.token!,
         username,
-        file,
-        type: choice,
+        selectedFile,
+        type: type,
       );
       _mergeMessages([result]);
       await LocalCache.saveMessages(username, messages);
+      await LocalCache.markRead(username, DateTime.now().toUtc().toIso8601String());
       if (mounted) setState(() {});
       _bottom();
     } on ApiException catch (e) {
@@ -301,6 +370,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void dispose() {
     pollTimer?.cancel();
+    profileTimer?.cancel();
     input.dispose();
     scroll.dispose();
     super.dispose();
@@ -308,8 +378,10 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   Widget build(BuildContext context) {
+    final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
     return Scaffold(
       backgroundColor: const Color(0xFF080D10),
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         backgroundColor: const Color(0xFF10171A),
         title: Row(children: [
@@ -320,18 +392,47 @@ class _ChatPageState extends State<ChatPage> {
         actions: [PopupMenuButton<String>(onSelected: (v) { if (v == 'rename') _rename(); }, itemBuilder: (_) => const [PopupMenuItem(value: 'rename', child: Text('Ganti nama kontak'))])],
       ),
       body: Stack(children: [
-        Positioned.fill(child: Image.asset('assets/chat_background.jpg', fit: BoxFit.cover, filterQuality: FilterQuality.low)),
+        // This layer is intentionally outside the keyboard-resized content.
+        // The wallpaper therefore stays visually locked to the screen when
+        // the Android keyboard opens.
+        Positioned.fill(
+          child: Image.asset(
+            'assets/chat_background.jpg',
+            fit: BoxFit.cover,
+            alignment: Alignment.topCenter,
+            filterQuality: FilterQuality.low,
+          ),
+        ),
         Positioned.fill(child: Container(color: const Color(0xB9080D10))),
-        Column(children: [
-          Expanded(child: ListView.builder(controller: scroll, padding: const EdgeInsets.fromLTRB(10, 12, 10, 12), itemCount: messages.length, itemBuilder: (_, i) {
-            final current = messages[i];
-            final previous = i > 0 ? messages[i - 1] : null;
-            final currentDay = _dayKey(current['createdAt']);
-            final previousDay = previous == null ? null : _dayKey(previous['createdAt']);
-            return Column(children: [if (currentDay != previousDay) _dayChip(current['createdAt']), _bubble(current)]);
-          })),
-          _composer(),
-        ]),
+        Positioned.fill(
+          child: Padding(
+            padding: EdgeInsets.only(bottom: 76 + keyboardInset),
+            child: ListView.builder(
+              controller: scroll,
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              padding: const EdgeInsets.fromLTRB(10, 12, 10, 12),
+              itemCount: messages.length,
+              itemBuilder: (_, i) {
+                final current = messages[i];
+                final previous = i > 0 ? messages[i - 1] : null;
+                final currentDay = _dayKey(current['createdAt']);
+                final previousDay = previous == null ? null : _dayKey(previous['createdAt']);
+                return Column(
+                  children: [
+                    if (currentDay != previousDay) _dayChip(current['createdAt']),
+                    _bubble(current),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: keyboardInset,
+          child: SafeArea(bottom: true, top: false, child: _composer()),
+        ),
       ]),
     );
   }
@@ -445,35 +546,48 @@ class _ChatPageState extends State<ChatPage> {
     return '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
   }
 
-  Widget _composer() => SafeArea(
-    child: Container(
-      padding: const EdgeInsets.fromLTRB(8, 5, 8, 7),
-      color: const Color(0xFF10171A),
-      child: Row(
-        children: [
-          IconButton(onPressed: sendingMedia ? null : sendMedia, icon: const Icon(Icons.attach_file)),
-          Expanded(
-            child: TextField(
-              controller: input,
-              minLines: 1,
-              maxLines: 5,
-              
-              decoration: InputDecoration(
-                hintText: 'Pesan',
-                filled: true,
-                fillColor: const Color(0xFF20282C),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+  Widget _composer() => Container(
+    padding: const EdgeInsets.fromLTRB(8, 5, 8, 7),
+    color: const Color(0xFF10171A),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        IconButton(
+          padding: const EdgeInsets.all(10),
+          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+          onPressed: sendingMedia ? null : sendMedia,
+          icon: const Icon(Icons.attach_file),
+        ),
+        Expanded(
+          child: TextField(
+            controller: input,
+            minLines: 1,
+            maxLines: 5,
+            textInputAction: TextInputAction.newline,
+            decoration: InputDecoration(
+              hintText: 'Pesan',
+              filled: true,
+              fillColor: const Color(0xFF20282C),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(24),
+                borderSide: BorderSide.none,
               ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             ),
           ),
-          const SizedBox(width: 5),
-          CircleAvatar(
+        ),
+        const SizedBox(width: 5),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 2),
+          child: CircleAvatar(
             backgroundColor: const Color(0xFF6C4DFF),
-            child: IconButton(onPressed: sendText, icon: const Icon(Icons.send, color: Colors.white, size: 20)),
+            child: IconButton(
+              onPressed: sendText,
+              icon: const Icon(Icons.send, color: Colors.white, size: 20),
+            ),
           ),
-        ],
-      ),
+        ),
+      ],
     ),
   );
 

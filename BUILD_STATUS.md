@@ -1,20 +1,13 @@
 # Build Status
 
-ChatWithU client update 1.2.0+4.
+## ChatWithU v1.3.0+5
 
-Key updates:
-- Removed Socket.IO from the Flutter client.
-- Chat incremental polling every 1 second using `messages?since=`.
-- Home/inbox polling every 1 second while Home is visible.
-- Optimistic text sending with stable reconciliation and animated send status.
-- Added generic file picker support with a 50 MB client-side limit.
-- Photo/video upload remains limited to 50 MB.
-- Local timestamps converted to device time.
-- Chat day separators: Hari Ini, Kemarin, then date/month/year.
-- Dynamic message bubble width and wrapping.
-- Gallery Saver Plus for saving photo/video media.
-- Optional profile photo.
-- Username change preserving contacts and message history.
-- Banned screen on HTTP 403.
+This package includes the UI/realtime fixes requested for the Android chat client:
 
-The environment used to assemble this source does not contain the Flutter/Android SDK, so an APK was not compiled here. The GitHub Actions workflow now uses Flutter 3.47.4 (Dart 3.13.3) for the build.
+- `flutter analyze` issue in `chat_page.dart` is fixed.
+- Gallery attachment now uses one native image/video picker, with a separate Documents flow.
+- Unread badges are cleared immediately when a chat is opened and remain cleared until a newer message arrives.
+- Chat wallpaper is locked to the screen while the keyboard is open; the composer floats above the keyboard.
+- Existing 1-second HTTP polling, optimistic sending, media upload, downloads, profile, contacts, and verified badge behavior are preserved.
+
+The GitHub Actions workflow still runs `flutter analyze`, `flutter test`, and release APK builds.
