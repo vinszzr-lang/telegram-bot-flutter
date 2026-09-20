@@ -293,7 +293,7 @@ class _ChatPageState extends State<ChatPage> {
     );
     if (choice == null) return;
 
-    File? file;
+    late final File selectedFile;
     String fileName = '';
     String type = 'file';
     try {
@@ -306,7 +306,7 @@ class _ChatPageState extends State<ChatPage> {
           maxHeight: 2400,
         );
         if (picked == null) return;
-        file = File(picked.path);
+        selectedFile = File(picked.path);
         fileName = picked.name;
         final mime = (picked.mimeType ?? '').toLowerCase();
         type = mime.startsWith('video/') ? 'video' : 'image';
@@ -319,13 +319,12 @@ class _ChatPageState extends State<ChatPage> {
         // Use the current single-file API so analyze/build stay clean.
         final picked = await FilePicker.pickFile();
         if (picked == null || picked.path == null) return;
-        file = File(picked.path!);
+        selectedFile = File(picked.path!);
         fileName = picked.name;
         type = 'file';
       }
 
-      // Every picker branch above either returns or assigns a file.
-      final selectedFile = file!;
+      // Every picker branch above either returns or assigns selectedFile.
       final bytes = await selectedFile.length();
       if (bytes > 50 * 1024 * 1024) {
         if (mounted) {
