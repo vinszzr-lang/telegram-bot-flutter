@@ -49,7 +49,7 @@ Version `1.3.0+7`.
 flutter pub get
 flutter analyze
 flutter test
-flutter build apk --release --dart-define=CHATWITHU_BASE_URL=https://stock-staining-composure.ngrok-free.dev
+flutter build apk --release --dart-define=CHATWITHU_BASE_URL=https://panelbaru2.rexzystr.my.id:5201
 ```
 
 APK: `build/app/outputs/flutter-apk/app-release.apk`
