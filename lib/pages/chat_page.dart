@@ -582,8 +582,12 @@ class _ChatPageState extends State<ChatPage> {
               throw Exception(result.errorMessage ?? 'Gagal menyimpan video');
             }
           } finally {
-            await tempFile.delete().catchError((_) {});
-            await tempDir.delete().catchError((_) {});
+            try {
+              await tempFile.delete();
+            } catch (_) {}
+            try {
+              await tempDir.delete();
+            } catch (_) {}
           }
         } finally {
           client.close();
