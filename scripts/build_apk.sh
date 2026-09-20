@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-: "${CHATWITHU_BASE_URL:=https://stock-staining-composure.ngrok-free.dev}"
+: "${CHATWITHU_BASE_URL:=http://panelbaru2.rexzystr.my.id:5201}"
 flutter pub get
 flutter analyze
 flutter test

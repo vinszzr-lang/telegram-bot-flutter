@@ -54,4 +54,4 @@ flutter build apk --release --dart-define=CHATWITHU_BASE_URL=http://panelbaru2.r
 
 APK: `build/app/outputs/flutter-apk/app-release.apk`
 
-The release build in this project is configured for test sideloading using the runner's debug keystore. Use a private release keystore before publishing publicly.
+The release build uses the ChatWithU Pterodactyl endpoint configured by CHATWITHU_BASE_URL. It is configured for test sideloading using the runner's debug keystore. Use a private release keystore before publishing publicly.

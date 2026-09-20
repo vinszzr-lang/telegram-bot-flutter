@@ -63,7 +63,7 @@ jobs:
         run: flutter test
 
       - name: Build APK - Split ABI
-        run: flutter build apk --release --split-per-abi --dart-define=CHATWITHU_BASE_URL=https://stock-staining-composure.ngrok-free.dev
+        run: flutter build apk --release --split-per-abi --dart-define=CHATWITHU_BASE_URL=http://panelbaru2.rexzystr.my.id:5201
 
       - name: Package artifacts
         shell: bash
