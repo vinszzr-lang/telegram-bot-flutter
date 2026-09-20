@@ -170,10 +170,18 @@ class _ChatPageState extends State<ChatPage> {
     _bottom();
     try {
       final result = await api.sendMessage(widget.session.token!, username, text);
-      final i = messages.indexWhere((m) => m['id'] == temp['id']);
-      if (i >= 0) messages[i] = result;
+      // The server also emits this same message through Socket.IO. If that
+      // event arrived before the HTTP response, it already exists in the list
+      // under the real server id. Remove both the optimistic placeholder and
+      // any socket copy before inserting the canonical server message.
+      messages.removeWhere((m) =>
+          m['id']?.toString() == temp['id']?.toString() ||
+          m['id']?.toString() == result['id']?.toString());
+      messages.add(result);
+      _mergeMessages(const []);
       await LocalCache.saveMessages(username, messages);
       if (mounted) setState(() {});
+      _bottom();
     } on ApiException catch (e) {
       if (e.status == 403) return _showBanned();
       final i = messages.indexWhere((m) => m['id'] == temp['id']);
@@ -186,41 +194,76 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  Future<bool> _requestGalleryPermission({required bool video}) async {
-    // On Android 13+ these map to READ_MEDIA_*; on older Android the plugin
-    // maps them to the compatible storage permission. The system Photo Picker
-    // may not require it, but requesting here gives the user an explicit choice.
-    final statuses = await [Permission.photos, if (video) Permission.videos].request();
-    return statuses.values.every((s) => s.isGranted || s.isLimited);
-  }
-
   Future<void> sendMedia() async {
-    final permission = await _requestGalleryPermission(video: true);
-    if (!permission) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Izin foto dan video diperlukan untuk memilih media.')));
-      return;
-    }
-    final picked = await picker.pickMedia();
+    // Use the native Android Photo Picker directly. It keeps the user in the
+    // gallery instead of opening the Files app and does not require a
+    // READ_MEDIA_* permission on modern Android.
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF151217),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_outlined),
+              title: const Text('Pilih foto'),
+              onTap: () => Navigator.pop(context, 'image'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.videocam_outlined),
+              title: const Text('Pilih video'),
+              onTap: () => Navigator.pop(context, 'video'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null) return;
+
+    final XFile? picked = choice == 'image'
+        ? await picker.pickImage(
+            source: ImageSource.gallery,
+            imageQuality: 92,
+            maxWidth: 2400,
+          )
+        : await picker.pickVideo(
+            source: ImageSource.gallery,
+            maxDuration: const Duration(minutes: 10),
+          );
     if (picked == null) return;
+
     final file = File(picked.path);
     final bytes = await file.length();
     if (bytes > 50 * 1024 * 1024) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('File maksimal 50 MB.')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('File maksimal 50 MB.')),
+      );
       return;
     }
+
     setState(() => sendingMedia = true);
     try {
-      final type = (picked.mimeType ?? '').startsWith('image/') ? 'image' : 'video';
-      final result = await api.uploadMedia(widget.session.token!, username, file, type: type);
+      final type = choice;
+      final result = await api.uploadMedia(
+        widget.session.token!,
+        username,
+        file,
+        type: type,
+      );
       _mergeMessages([result]);
       await LocalCache.saveMessages(username, messages);
       if (mounted) setState(() {});
       _bottom();
     } on ApiException catch (e) {
       if (e.status == 403) _showBanned();
-      else if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      else if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal mengirim media: $e')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Gagal mengirim media: $e')),
+      );
     } finally {
       if (mounted) setState(() => sendingMedia = false);
     }
@@ -299,7 +342,41 @@ class _ChatPageState extends State<ChatPage> {
     } else {
       body = Text(message['message']?.toString() ?? '', style: const TextStyle(fontSize: 15));
     }
-    return Align(alignment: me ? Alignment.centerRight : Alignment.centerLeft, child: Container(constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * .82), margin: const EdgeInsets.only(bottom: 5), padding: const EdgeInsets.fromLTRB(12, 8, 8, 6), decoration: BoxDecoration(color: me ? const Color(0xFF2A6B55) : const Color(0xFF20282C), borderRadius: BorderRadius.circular(12)), child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [Align(alignment: Alignment.centerLeft, child: body), Row(mainAxisSize: MainAxisSize.min, children: [Text(_time(message['createdAt']), style: const TextStyle(fontSize: 10, color: Colors.white54)), if (me) ...[const SizedBox(width: 3), _ticks(status)]])])));
+    final maxBubbleWidth = MediaQuery.sizeOf(context).width * .82;
+    return Align(
+      alignment: me ? Alignment.centerRight : Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxBubbleWidth),
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 5),
+          padding: const EdgeInsets.fromLTRB(12, 8, 8, 6),
+          decoration: BoxDecoration(
+            color: me ? const Color(0xFF2A6B55) : const Color(0xFF20282C),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              // widthFactor: 1 keeps short messages compact while the
+              // ConstrainedBox still limits long messages and wraps them.
+              Align(
+                alignment: Alignment.centerLeft,
+                widthFactor: 1,
+                child: body,
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(_time(message['createdAt']), style: const TextStyle(fontSize: 10, color: Colors.white54)),
+                  if (me) ...[const SizedBox(width: 3), _ticks(status)],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _ticks(String status) {

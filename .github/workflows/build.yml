@@ -17,16 +17,20 @@ jobs:
           java-version: '17'
           cache: gradle
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: |
+            platform-tools
+            platforms;android-36
+            build-tools;36.0.0
+            ndk;28.2.13676358
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.35.7'
           channel: stable
           cache: true
-
-      - name: Install Android NDK required by dependencies
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
 
       - name: Flutter pub get
         run: flutter pub get
@@ -37,16 +41,18 @@ jobs:
       - name: Test
         run: flutter test
 
-      - name: Build APK
-        run: flutter build apk --release --dart-define=CHATWITHU_BASE_URL=https://stock-staining-composure.ngrok-free.dev
+      - name: Build APK - Split ABI
+        run: flutter build apk --release --split-per-abi --dart-define=CHATWITHU_BASE_URL=https://stock-staining-composure.ngrok-free.dev
 
-      - name: Package artifact
+      - name: Package artifacts
         run: |
           mkdir -p dist
-          cp build/app/outputs/flutter-apk/app-release.apk dist/ChatWithU.apk
-          sha256sum dist/ChatWithU.apk > dist/SHA256SUMS.txt
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk dist/ChatWithU-arm64-v8a.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk dist/ChatWithU-armeabi-v7a.apk
+          cp build/app/outputs/flutter-apk/app-x86_64-release.apk dist/ChatWithU-x86_64.apk
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ChatWithU-Android
+          name: ChatWithU-Android-Split-ABI
           path: dist/

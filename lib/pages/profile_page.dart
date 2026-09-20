@@ -47,12 +47,14 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Future<void> _pickAvatar() async {
-    final permission = await Permission.photos.request();
-    if (!(permission.isGranted || permission.isLimited)) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Izin galeri diperlukan untuk foto profil.')));
-      return;
-    }
-    final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 88, maxWidth: 1200);
+    // image_picker uses Android's native Photo Picker on supported Android
+    // versions. Do not request READ_MEDIA_* first; doing so can send users
+    // through the permission/file flow instead of opening the gallery picker.
+    final picked = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 88,
+      maxWidth: 1200,
+    );
     if (picked == null) return;
     setState(() => uploading = true);
     try {
@@ -60,6 +62,13 @@ class _ProfilePageState extends State<ProfilePage> {
       await widget.session.updateUser(Map<String, dynamic>.from(data['user']));
       if (mounted) setState(() {});
     } on ApiException catch (e) {
+      // Restore the socket if the HTTP username change failed.
+      if (widget.session.token != null && socket == null) {
+        socket = SocketService(widget.session.token!, (_) {}, (_) {},
+          onBanned: _showBanned,
+          onProfileUpdated: _profileUpdated,
+        )..connect();
+      }
       if (e.status == 403) return _showBanned();
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
@@ -89,15 +98,37 @@ class _ProfilePageState extends State<ProfilePage> {
     controller.dispose();
     if (value == null || value.isEmpty || value == widget.session.username) return;
     setState(() => changingUsername = true);
+    // The server invalidates the old JWT and disconnects the old Socket.IO
+    // connection after a username change. Dispose it first so auto-reconnect
+    // cannot repeatedly handshake with the now-invalid token.
+    socket?.dispose();
+    socket = null;
     try {
       final data = await api.changeUsername(widget.session.token!, value);
       await widget.session.save(data);
+      socket = SocketService(widget.session.token!, (_) {}, (_) {},
+        onBanned: _showBanned,
+        onProfileUpdated: _profileUpdated,
+      )..connect();
       if (mounted) setState(() {});
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Username berhasil diganti. Chat dan kontak tetap tersimpan.')));
     } on ApiException catch (e) {
+      // Restore the socket if the HTTP username change failed.
+      if (widget.session.token != null && socket == null) {
+        socket = SocketService(widget.session.token!, (_) {}, (_) {},
+          onBanned: _showBanned,
+          onProfileUpdated: _profileUpdated,
+        )..connect();
+      }
       if (e.status == 403) return _showBanned();
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
+      if (widget.session.token != null && socket == null) {
+        socket = SocketService(widget.session.token!, (_) {}, (_) {},
+          onBanned: _showBanned,
+          onProfileUpdated: _profileUpdated,
+        )..connect();
+      }
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal mengganti username: $e')));
     } finally {
       if (mounted) setState(() => changingUsername = false);
