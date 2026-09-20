@@ -138,22 +138,6 @@ class _ChatPageState extends State<ChatPage> {
     return changed;
   }
 
-  Future<void> _profileUpdated(Map<String, dynamic> p) async {
-    final old = p['oldUsername']?.toString();
-    final next = p['username']?.toString();
-    if (old == username && next != null && next.isNotEmpty) {
-      username = next;
-      final newLocal = await LocalCache.messages(username);
-      if (newLocal.isNotEmpty) _mergeMessages(newLocal);
-    }
-    if (next == username || old == username) {
-      avatarUrl = (p['avatarUrl'] ?? '').toString();
-      verified = p['verified'] == true;
-      if (p['displayName'] != null && widget.contact['name'] == null) displayName = p['displayName'].toString();
-      if (mounted) setState(() {});
-    }
-  }
-
   void _showBanned() {
     if (!mounted) return;
     pollTimer?.cancel();
