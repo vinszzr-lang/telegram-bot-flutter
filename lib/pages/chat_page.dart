@@ -324,8 +324,8 @@ class _ChatPageState extends State<ChatPage> {
         type = 'file';
       }
 
-      final selectedFile = file;
-      if (selectedFile == null) return;
+      // Every picker branch above either returns or assigns a file.
+      final selectedFile = file!;
       final bytes = await selectedFile.length();
       if (bytes > 50 * 1024 * 1024) {
         if (mounted) {
