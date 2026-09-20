@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'services/session.dart';
-import 'services/api.dart';
 import 'pages/login_page.dart';
 import 'pages/home_page.dart';
 import 'utils/navigation.dart';

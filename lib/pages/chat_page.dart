@@ -434,6 +434,16 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  Future<bool> _requestGalleryPermission({required bool video}) async {
+    // Android 13+ uses separate media permissions. The permission is only
+    // requested when saving media; picking media uses the system Photo Picker.
+    if (!Platform.isAndroid) return true;
+
+    final permission = video ? Permission.videos : Permission.photos;
+    final status = await permission.request();
+    return status.isGranted || status.isLimited;
+  }
+
   Future<void> _download(String url, dynamic type) async {
     if (url.isEmpty) return;
     try {
