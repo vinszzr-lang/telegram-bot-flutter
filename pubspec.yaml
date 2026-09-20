@@ -1,0 +1,28 @@
+name: chatwithu
+description: "ChatWithU - private realtime messaging client"
+publish_to: "none"
+version: 1.1.0+3
+
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  shared_preferences: ^2.5.3
+  http: ^1.2.2
+  socket_io_client: ^3.1.6
+  image_picker: ^1.1.2
+  gallery_saver_plus: ^3.2.9
+  permission_handler: ^12.0.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/chat_background.jpg

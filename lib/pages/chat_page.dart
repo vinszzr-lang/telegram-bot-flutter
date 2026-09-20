@@ -1,0 +1,369 @@
+import 'dart:async';
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:gallery_saver_plus/gallery_saver.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
+import '../services/api.dart';
+import '../services/session.dart';
+import '../services/socket_service.dart';
+import '../utils/db.dart';
+import '../widgets/verified_badge.dart';
+import 'banned_page.dart';
+
+class ChatPage extends StatefulWidget {
+  final Session session;
+  final Map<String, dynamic> contact;
+  const ChatPage({super.key, required this.session, required this.contact});
+  @override
+  State<ChatPage> createState() => _ChatPageState();
+}
+
+class _ChatPageState extends State<ChatPage> {
+  late String username;
+  late String displayName;
+  String avatarUrl = '';
+  bool verified = false;
+  final api = Api();
+  final input = TextEditingController();
+  final scroll = ScrollController();
+  final picker = ImagePicker();
+  late SocketService socket;
+  Timer? pollTimer;
+  List<Map<String, dynamic>> messages = [];
+  bool sendingMedia = false;
+  bool syncing = false;
+  String? lastCursor;
+
+  @override
+  void initState() {
+    super.initState();
+    username = widget.contact['username'].toString();
+    displayName = (widget.contact['name'] ?? widget.contact['displayName'] ?? username).toString();
+    avatarUrl = (widget.contact['avatarUrl'] ?? '').toString();
+    verified = widget.contact['verified'] == true;
+    load();
+    socket = SocketService(widget.session.token!, _receive, (_) {}, onBanned: _showBanned, onProfileUpdated: _profileUpdated)..connect();
+    // Immediate delivery comes from Socket.IO. This 400ms sync is a fallback for
+    // reconnects/admin changes and deliberately avoids manual page refreshes.
+    pollTimer = Timer.periodic(const Duration(milliseconds: 400), (_) => syncMessages());
+  }
+
+  Future<void> load() async {
+    final local = await LocalCache.messages(username);
+    if (mounted && local.isNotEmpty) setState(() => messages = local);
+    await syncMessages(full: true);
+    _bottom(jump: true);
+  }
+
+  Future<void> syncMessages({bool full = false}) async {
+    if (syncing || widget.session.token == null) return;
+    syncing = true;
+    try {
+      final remote = await api.messages(widget.session.token!, username, since: full ? null : lastCursor);
+      _mergeMessages(remote.map((e) => Map<String, dynamic>.from(e)).toList());
+      final all = messages;
+      if (all.isNotEmpty) {
+        DateTime? newest;
+        for (final m in all) {
+          final raw = m['updatedAt'] ?? m['createdAt'];
+          final d = DateTime.tryParse(raw?.toString() ?? '');
+          if (d != null && (newest == null || d.isAfter(newest))) newest = d;
+        }
+        if (newest != null) lastCursor = newest.toUtc().toIso8601String();
+      }
+      await LocalCache.saveMessages(username, messages);
+      if (remote.isNotEmpty) {
+        if (mounted) setState(() {});
+        _bottom();
+      }
+    } on ApiException catch (e) {
+      if (e.status == 403) _showBanned();
+    } catch (_) {
+      // Socket.IO remains the primary real-time channel.
+    } finally {
+      syncing = false;
+    }
+  }
+
+  void _mergeMessages(List<Map<String, dynamic>> incoming) {
+    final byId = <String, Map<String, dynamic>>{};
+    for (final m in messages) {
+      final id = m['id']?.toString();
+      if (id != null) byId[id] = m;
+    }
+    for (final m in incoming) {
+      final id = m['id']?.toString();
+      if (id == null) continue;
+      byId[id] = {...?byId[id], ...m};
+    }
+    final merged = byId.values.toList()..sort((a, b) => DateTime.tryParse(a['createdAt']?.toString() ?? '')?.compareTo(DateTime.tryParse(b['createdAt']?.toString() ?? '') ?? DateTime(0)) ?? 0);
+    messages = merged;
+  }
+
+  void _receive(Map<String, dynamic> message) {
+    if (message['_event'] == 'deleted') {
+      messages.removeWhere((m) => m['id']?.toString() == message['id']?.toString());
+      if (mounted) setState(() {});
+      return;
+    }
+    final sender = (message['senderUsername'] ?? message['sender'])?.toString();
+    final recipient = message['recipientUsername']?.toString();
+    if (sender == username || recipient == username || sender == widget.session.username) {
+      _mergeMessages([message]);
+      LocalCache.saveMessages(username, messages);
+      if (sender == username) socket.markRead(username);
+      if (mounted) setState(() {});
+      _bottom();
+    }
+  }
+
+  Future<void> _profileUpdated(Map<String, dynamic> p) async {
+    final old = p['oldUsername']?.toString();
+    final next = p['username']?.toString();
+    if (old == username && next != null && next.isNotEmpty) {
+      username = next;
+      final newLocal = await LocalCache.messages(username);
+      if (newLocal.isNotEmpty) _mergeMessages(newLocal);
+    }
+    if (next == username || old == username) {
+      avatarUrl = (p['avatarUrl'] ?? '').toString();
+      verified = p['verified'] == true;
+      if (p['displayName'] != null && widget.contact['name'] == null) displayName = p['displayName'].toString();
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _showBanned() {
+    if (!mounted) return;
+    pollTimer?.cancel();
+    socket.dispose();
+    Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => BannedPage(session: widget.session)), (_) => false);
+  }
+
+  void _bottom({bool jump = false}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!scroll.hasClients) return;
+      final target = scroll.position.maxScrollExtent;
+      if (jump) {
+        scroll.jumpTo(target);
+      } else {
+        scroll.animateTo(target, duration: const Duration(milliseconds: 140), curve: Curves.easeOut);
+      }
+    });
+  }
+
+  Future<void> sendText() async {
+    final text = input.text.trim();
+    if (text.isEmpty) return;
+    input.clear();
+    final temp = <String, dynamic>{
+      'id': 'local-${DateTime.now().microsecondsSinceEpoch}',
+      'type': 'text',
+      'message': text,
+      'senderUsername': widget.session.username,
+      'recipientUsername': username,
+      'status': 'sending',
+      'createdAt': DateTime.now().toUtc().toIso8601String(),
+    };
+    setState(() => messages.add(temp));
+    _bottom();
+    try {
+      final result = await api.sendMessage(widget.session.token!, username, text);
+      final i = messages.indexWhere((m) => m['id'] == temp['id']);
+      if (i >= 0) messages[i] = result;
+      await LocalCache.saveMessages(username, messages);
+      if (mounted) setState(() {});
+    } on ApiException catch (e) {
+      if (e.status == 403) return _showBanned();
+      final i = messages.indexWhere((m) => m['id'] == temp['id']);
+      if (i >= 0) messages[i] = {...temp, 'status': 'failed'};
+      if (mounted) setState(() {});
+    } catch (_) {
+      final i = messages.indexWhere((m) => m['id'] == temp['id']);
+      if (i >= 0) messages[i] = {...temp, 'status': 'failed'};
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<bool> _requestGalleryPermission({required bool video}) async {
+    // On Android 13+ these map to READ_MEDIA_*; on older Android the plugin
+    // maps them to the compatible storage permission. The system Photo Picker
+    // may not require it, but requesting here gives the user an explicit choice.
+    final statuses = await [Permission.photos, if (video) Permission.videos].request();
+    return statuses.values.every((s) => s.isGranted || s.isLimited);
+  }
+
+  Future<void> sendMedia() async {
+    final permission = await _requestGalleryPermission(video: true);
+    if (!permission) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Izin foto dan video diperlukan untuk memilih media.')));
+      return;
+    }
+    final picked = await picker.pickMedia();
+    if (picked == null) return;
+    final file = File(picked.path);
+    final bytes = await file.length();
+    if (bytes > 50 * 1024 * 1024) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('File maksimal 50 MB.')));
+      return;
+    }
+    setState(() => sendingMedia = true);
+    try {
+      final type = (picked.mimeType ?? '').startsWith('image/') ? 'image' : 'video';
+      final result = await api.uploadMedia(widget.session.token!, username, file, type: type);
+      _mergeMessages([result]);
+      await LocalCache.saveMessages(username, messages);
+      if (mounted) setState(() {});
+      _bottom();
+    } on ApiException catch (e) {
+      if (e.status == 403) _showBanned();
+      else if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal mengirim media: $e')));
+    } finally {
+      if (mounted) setState(() => sendingMedia = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    pollTimer?.cancel();
+    socket.dispose();
+    input.dispose();
+    scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF080D10),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF10171A),
+        title: Row(children: [
+          CircleAvatar(radius: 19, backgroundColor: const Color(0xFF51418B), backgroundImage: avatarUrl.isNotEmpty ? NetworkImage(avatarUrl) : null, child: avatarUrl.isEmpty ? Text(displayName.isEmpty ? '?' : displayName[0].toUpperCase()) : null),
+          const SizedBox(width: 10),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(children: [Flexible(child: Text(displayName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis)), if (verified) const Padding(padding: EdgeInsets.only(left: 4), child: VerifiedBadge(size: 15))]), Text('@$username', style: const TextStyle(fontSize: 12, color: Colors.white54))])),
+        ]),
+        actions: [PopupMenuButton<String>(onSelected: (v) { if (v == 'rename') _rename(); }, itemBuilder: (_) => const [PopupMenuItem(value: 'rename', child: Text('Ganti nama kontak'))])],
+      ),
+      body: Stack(children: [
+        Positioned.fill(child: Image.asset('assets/chat_background.jpg', fit: BoxFit.cover, filterQuality: FilterQuality.low)),
+        Positioned.fill(child: Container(color: const Color(0xB9080D10))),
+        Column(children: [
+          Expanded(child: ListView.builder(controller: scroll, padding: const EdgeInsets.fromLTRB(10, 12, 10, 12), itemCount: messages.length, itemBuilder: (_, i) {
+            final current = messages[i];
+            final previous = i > 0 ? messages[i - 1] : null;
+            final currentDay = _dayKey(current['createdAt']);
+            final previousDay = previous == null ? null : _dayKey(previous['createdAt']);
+            return Column(children: [if (currentDay != previousDay) _dayChip(current['createdAt']), _bubble(current)]);
+          })),
+          _composer(),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _dayChip(dynamic value) => Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: const Color(0xFF1E292D), borderRadius: BorderRadius.circular(12)), child: Text(_dayLabel(value), style: const TextStyle(fontSize: 12, color: Colors.white70))));
+
+  String _dayKey(dynamic value) {
+    final d = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
+    return d == null ? '' : '${d.year}-${d.month}-${d.day}';
+  }
+
+  String _dayLabel(dynamic value) {
+    final d = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
+    if (d == null) return '';
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(d.year, d.month, d.day);
+    final diff = today.difference(day).inDays;
+    if (diff == 0) return 'Hari Ini';
+    if (diff == 1) return 'Kemarin';
+    const months = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+    return '${d.day} ${months[d.month - 1]} ${d.year}';
+  }
+
+  Widget _bubble(Map<String, dynamic> message) {
+    final me = (message['senderUsername'] ?? message['sender']) == widget.session.username;
+    final type = message['type'] ?? 'text';
+    final status = message['status']?.toString() ?? 'sent';
+    Widget body;
+    if (type == 'image' || type == 'video') {
+      final url = message['url']?.toString() ?? message['mediaUrl']?.toString() ?? '';
+      body = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (url.isNotEmpty) Container(width: 230, height: 160, clipBehavior: Clip.antiAlias, decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)), child: type == 'image' ? Image.network(url, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Center(child: Icon(Icons.broken_image))) : Stack(fit: StackFit.expand, children: [Container(color: Colors.black45), const Center(child: Icon(Icons.play_circle_fill, size: 54, color: Colors.white))])),
+        Row(mainAxisSize: MainAxisSize.min, children: [Text(type == 'video' ? 'Video' : 'Foto', style: const TextStyle(fontSize: 12)), IconButton(onPressed: () => _download(url, type), icon: const Icon(Icons.download, size: 18))]),
+      ]);
+    } else {
+      body = Text(message['message']?.toString() ?? '', style: const TextStyle(fontSize: 15));
+    }
+    return Align(alignment: me ? Alignment.centerRight : Alignment.centerLeft, child: Container(constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * .82), margin: const EdgeInsets.only(bottom: 5), padding: const EdgeInsets.fromLTRB(12, 8, 8, 6), decoration: BoxDecoration(color: me ? const Color(0xFF2A6B55) : const Color(0xFF20282C), borderRadius: BorderRadius.circular(12)), child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [Align(alignment: Alignment.centerLeft, child: body), Row(mainAxisSize: MainAxisSize.min, children: [Text(_time(message['createdAt']), style: const TextStyle(fontSize: 10, color: Colors.white54)), if (me) ...[const SizedBox(width: 3), _ticks(status)]])])));
+  }
+
+  Widget _ticks(String status) {
+    if (status == 'failed') return const Icon(Icons.close, color: Colors.redAccent, size: 15);
+    if (status == 'read') return const Icon(Icons.done_all, color: Color(0xFF53BDEB), size: 15);
+    if (status == 'sent' || status == 'delivered') return const Icon(Icons.done_all, color: Colors.white54, size: 15);
+    return const Icon(Icons.check, color: Colors.white54, size: 15);
+  }
+
+  String _time(dynamic value) {
+    final d = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
+    if (d == null) return '';
+    return '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+  }
+
+  Widget _composer() => SafeArea(
+    child: Container(
+      padding: const EdgeInsets.fromLTRB(8, 5, 8, 7),
+      color: const Color(0xFF10171A),
+      child: Row(
+        children: [
+          IconButton(onPressed: sendingMedia ? null : sendMedia, icon: const Icon(Icons.attach_file)),
+          Expanded(
+            child: TextField(
+              controller: input,
+              minLines: 1,
+              maxLines: 5,
+              onChanged: (v) => socket.sendTyping(username, v.isNotEmpty),
+              decoration: InputDecoration(
+                hintText: 'Pesan',
+                filled: true,
+                fillColor: const Color(0xFF20282C),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              ),
+            ),
+          ),
+          const SizedBox(width: 5),
+          CircleAvatar(
+            backgroundColor: const Color(0xFF6C4DFF),
+            child: IconButton(onPressed: sendText, icon: const Icon(Icons.send, color: Colors.white, size: 20)),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Future<void> _rename() async {
+    final controller = TextEditingController(text: displayName);
+    final value = await showDialog<String>(context: context, builder: (_) => AlertDialog(title: const Text('Ganti nama kontak'), content: TextField(controller: controller, autofocus: true), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Batal')), FilledButton(onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('Simpan'))]));
+    controller.dispose();
+    if (value != null && value.isNotEmpty) {
+      try { await api.renameContact(widget.session.token!, username, value); if (mounted) setState(() => displayName = value); }
+      on ApiException catch (e) { if (e.status == 403) _showBanned(); else if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message))); }
+    }
+  }
+
+  Future<void> _download(String url, dynamic type) async {
+    if (url.isEmpty) return;
+    try {
+      final allowed = await _requestGalleryPermission(video: type == 'video');
+      if (!allowed) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Izin galeri diperlukan untuk menyimpan media.'))); return; }
+      final ok = type == 'video' ? await GallerySaver.saveVideo(url) : await GallerySaver.saveImage(url);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok == true ? 'Media disimpan ke galeri.' : 'Gagal menyimpan media.')));
+    } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal menyimpan: $e'))); }
+  }
+}
