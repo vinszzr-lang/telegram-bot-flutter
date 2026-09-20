@@ -1,6 +1,6 @@
 # ChatWithU API Contract
 
-Base URL: `https://panelbaru2.rexzystr.my.id:5201`
+Base URL: `http://panelbaru2.rexzystr.my.id:5201`
 
 ## User auth
 - `POST /api/auth/register` body `{firstName,lastName,username,password}` -> `{token,user}`

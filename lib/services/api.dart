@@ -13,7 +13,7 @@ class ApiException implements Exception {
 class Api {
   static const baseUrl = String.fromEnvironment(
     'CHATWITHU_BASE_URL',
-    defaultValue: 'https://panelbaru2.rexzystr.my.id:5201',
+    defaultValue: 'http://panelbaru2.rexzystr.my.id:5201',
   );
 
   Uri uri(String path) => Uri.parse('$baseUrl${path.startsWith('/') ? path : '/$path'}');
