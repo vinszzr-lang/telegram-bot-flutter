@@ -236,9 +236,11 @@ class _ChatPageState extends State<ChatPage> {
     final file = File(picked.path);
     final bytes = await file.length();
     if (bytes > 50 * 1024 * 1024) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('File maksimal 50 MB.')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('File maksimal 50 MB.')),
+        );
+      }
       return;
     }
 
@@ -256,14 +258,19 @@ class _ChatPageState extends State<ChatPage> {
       if (mounted) setState(() {});
       _bottom();
     } on ApiException catch (e) {
-      if (e.status == 403) _showBanned();
-      else if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message)),
-      );
+      if (e.status == 403) {
+        _showBanned();
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message)),
+        );
+      }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Gagal mengirim media: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Gagal mengirim media: $e')),
+        );
+      }
     } finally {
       if (mounted) setState(() => sendingMedia = false);
     }
@@ -429,8 +436,20 @@ class _ChatPageState extends State<ChatPage> {
     final value = await showDialog<String>(context: context, builder: (_) => AlertDialog(title: const Text('Ganti nama kontak'), content: TextField(controller: controller, autofocus: true), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Batal')), FilledButton(onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('Simpan'))]));
     controller.dispose();
     if (value != null && value.isNotEmpty) {
-      try { await api.renameContact(widget.session.token!, username, value); if (mounted) setState(() => displayName = value); }
-      on ApiException catch (e) { if (e.status == 403) _showBanned(); else if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message))); }
+      try {
+        await api.renameContact(widget.session.token!, username, value);
+        if (mounted) {
+          setState(() => displayName = value);
+        }
+      } on ApiException catch (e) {
+        if (e.status == 403) {
+          _showBanned();
+        } else if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.message)),
+          );
+        }
+      }
     }
   }
 
