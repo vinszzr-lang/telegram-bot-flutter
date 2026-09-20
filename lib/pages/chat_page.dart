@@ -315,13 +315,12 @@ class _ChatPageState extends State<ChatPage> {
           type = (lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.endsWith('.mkv') || lower.endsWith('.webm')) ? 'video' : 'image';
         }
       } else {
-        final picked = await FilePicker.platform.pickFiles(
-          allowMultiple: false,
-          withData: false,
-        );
-        if (picked == null || picked.files.single.path == null) return;
-        file = File(picked.files.single.path!);
-        fileName = picked.files.single.name;
+        // file_picker 13.x removed the old FilePicker.platform API.
+        // Use the current single-file API so analyze/build stay clean.
+        final picked = await FilePicker.pickFile();
+        if (picked == null || picked.path == null) return;
+        file = File(picked.path!);
+        fileName = picked.name;
         type = 'file';
       }
 

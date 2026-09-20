@@ -1,6 +1,6 @@
 # Build Status
 
-## ChatWithU v1.3.0+5
+## ChatWithU v1.3.0+7
 
 This package includes the UI/realtime fixes requested for the Android chat client:
 

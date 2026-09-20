@@ -6,7 +6,7 @@ Flutter Android client for ChatWithU.
 `com.vinzz.chatwithu`
 
 ## Current update
-Version `1.3.0+5`.
+Version `1.3.0+7`.
 
 ### Realtime
 - Socket.IO has been removed from the Android client for a simpler and more stable connection model.
