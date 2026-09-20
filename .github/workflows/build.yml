@@ -1,84 +1,53 @@
-name: Auto Build APK (Fix Missing Icon)
+name: Build ChatWithU Android
 
 on:
-  push:
-    branches: [ "main", "master" ]
   workflow_dispatch:
+  push:
+    branches: [ main, master ]
 
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Extract File Zip (Auto Detect)
-        run: |
-          echo "Mencari file .zip..."
-          ZIP_FILE=$(find . -name "*.zip" -not -path "*/.*" | head -n 1)
-          if [ -n "$ZIP_FILE" ]; then
-            echo "Menemukan file zip: $ZIP_FILE"
-            echo "Mengekstrak..."
-            unzip -o "$ZIP_FILE" -d ./extracted_project
-          else
-            echo "Tidak ada file .zip, melanjutkan dengan folder biasa..."
-          fi
-
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: temurin
           java-version: '17'
+          cache: gradle
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
+          flutter-version: '3.35.7'
+          channel: stable
+          cache: true
 
-      - name: Detect Folder Project Flutter
-        id: detect
+      - name: Install Android NDK required by dependencies
         run: |
-          PUBSPEC_PATH=$(find . -name "pubspec.yaml" -not -path "*/.*" | head -n 1)
-          if [ -z "$PUBSPEC_PATH" ]; then
-            echo "::error::File pubspec.yaml tidak ditemukan di dalam zip atau repository!"
-            exit 1
-          fi
-          PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
-          echo "Project Flutter ditemukan di: $PROJECT_DIR"
-          echo "dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
 
-      - name: Generate Dummy Launcher Icons (Auto Fix AAPT Error)
-        working-directory: ${{ steps.detect.outputs.dir }}
-        run: |
-          echo "Membuat folder dan file icon dummy jika kosong..."
-          RES_DIR="android/app/src/main/res"
-          
-          # Daftar folder mipmap
-          MIPMAP_DIRS=("mipmap-hdpi" "mipmap-mdpi" "mipmap-xhdpi" "mipmap-xxhdpi" "mipmap-xxxhdpi")
-          
-          for dir in "${MIPMAP_DIRS[@]}"; do
-            TARGET_DIR="$RES_DIR/$dir"
-            mkdir -p "$TARGET_DIR"
-            
-            # Jika ic_launcher.png tidak ada, buat gambar dummy 1x1 transparan
-            if [ ! -f "$TARGET_DIR/ic_launcher.png" ]; then
-              echo "Creating dummy icon in $TARGET_DIR"
-              echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" | base64 -d > "$TARGET_DIR/ic_launcher.png"
-            fi
-          done
-
-      - name: Install Dependencies
-        working-directory: ${{ steps.detect.outputs.dir }}
+      - name: Flutter pub get
         run: flutter pub get
 
-      - name: Build Release APK
-        working-directory: ${{ steps.detect.outputs.dir }}
-        run: flutter build apk --release --android-skip-build-dependency-validation
+      - name: Analyze
+        run: flutter analyze
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
+      - name: Test
+        run: flutter test
+
+      - name: Build APK
+        run: flutter build apk --release --dart-define=CHATWITHU_BASE_URL=https://stock-staining-composure.ngrok-free.dev
+
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk dist/ChatWithU.apk
+          sha256sum dist/ChatWithU.apk > dist/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: Simtudduror-Release-APK
-          path: '**/build/app/outputs/flutter-apk/app-release.apk'
+          name: ChatWithU-Android
+          path: dist/
           
