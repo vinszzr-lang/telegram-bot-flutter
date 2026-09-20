@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../services/api.dart';
 import '../services/session.dart';
-import '../services/socket_service.dart';
 import 'banned_page.dart';
 import 'login_page.dart';
 
@@ -17,18 +16,8 @@ class ProfilePage extends StatefulWidget {
 class _ProfilePageState extends State<ProfilePage> {
   final api = Api();
   final picker = ImagePicker();
-  SocketService? socket;
   bool uploading = false;
   bool changingUsername = false;
-
-  @override
-  void initState() {
-    super.initState();
-    socket = SocketService(widget.session.token!, (_) {}, (_) {},
-      onBanned: _showBanned,
-      onProfileUpdated: _profileUpdated,
-    )..connect();
-  }
 
   void _showBanned() {
     if (!mounted) return;
@@ -36,13 +25,6 @@ class _ProfilePageState extends State<ProfilePage> {
       MaterialPageRoute(builder: (_) => BannedPage(session: widget.session)),
       (_) => false,
     );
-  }
-
-  Future<void> _profileUpdated(Map<String, dynamic> user) async {
-    if (user['username']?.toString() == widget.session.username || user['oldUsername']?.toString() == widget.session.username) {
-      await widget.session.updateUser(user);
-      if (mounted) setState(() {});
-    }
   }
 
   Future<void> _pickAvatar() async {
@@ -61,13 +43,6 @@ class _ProfilePageState extends State<ProfilePage> {
       await widget.session.updateUser(Map<String, dynamic>.from(data['user']));
       if (mounted) setState(() {});
     } on ApiException catch (e) {
-      // Restore the socket if the HTTP username change failed.
-      if (widget.session.token != null && socket == null) {
-        socket = SocketService(widget.session.token!, (_) {}, (_) {},
-          onBanned: _showBanned,
-          onProfileUpdated: _profileUpdated,
-        )..connect();
-      }
       if (e.status == 403) return _showBanned();
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
@@ -97,37 +72,15 @@ class _ProfilePageState extends State<ProfilePage> {
     controller.dispose();
     if (value == null || value.isEmpty || value == widget.session.username) return;
     setState(() => changingUsername = true);
-    // The server invalidates the old JWT and disconnects the old Socket.IO
-    // connection after a username change. Dispose it first so auto-reconnect
-    // cannot repeatedly handshake with the now-invalid token.
-    socket?.dispose();
-    socket = null;
     try {
       final data = await api.changeUsername(widget.session.token!, value);
       await widget.session.save(data);
-      socket = SocketService(widget.session.token!, (_) {}, (_) {},
-        onBanned: _showBanned,
-        onProfileUpdated: _profileUpdated,
-      )..connect();
       if (mounted) setState(() {});
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Username berhasil diganti. Chat dan kontak tetap tersimpan.')));
     } on ApiException catch (e) {
-      // Restore the socket if the HTTP username change failed.
-      if (widget.session.token != null && socket == null) {
-        socket = SocketService(widget.session.token!, (_) {}, (_) {},
-          onBanned: _showBanned,
-          onProfileUpdated: _profileUpdated,
-        )..connect();
-      }
       if (e.status == 403) return _showBanned();
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
-      if (widget.session.token != null && socket == null) {
-        socket = SocketService(widget.session.token!, (_) {}, (_) {},
-          onBanned: _showBanned,
-          onProfileUpdated: _profileUpdated,
-        )..connect();
-      }
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal mengganti username: $e')));
     } finally {
       if (mounted) setState(() => changingUsername = false);
@@ -142,7 +95,6 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   void dispose() {
-    socket?.dispose();
     super.dispose();
   }
 

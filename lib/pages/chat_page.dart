@@ -3,10 +3,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:gallery_saver_plus/gallery_saver.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../services/api.dart';
 import '../services/session.dart';
-import '../services/socket_service.dart';
 import '../utils/db.dart';
 import '../widgets/verified_badge.dart';
 import 'banned_page.dart';
@@ -28,7 +28,6 @@ class _ChatPageState extends State<ChatPage> {
   final input = TextEditingController();
   final scroll = ScrollController();
   final picker = ImagePicker();
-  late SocketService socket;
   Timer? pollTimer;
   List<Map<String, dynamic>> messages = [];
   bool sendingMedia = false;
@@ -43,10 +42,9 @@ class _ChatPageState extends State<ChatPage> {
     avatarUrl = (widget.contact['avatarUrl'] ?? '').toString();
     verified = widget.contact['verified'] == true;
     load();
-    socket = SocketService(widget.session.token!, _receive, (_) {}, onBanned: _showBanned, onProfileUpdated: _profileUpdated)..connect();
-    // Immediate delivery comes from Socket.IO. This 400ms sync is a fallback for
-    // reconnects/admin changes and deliberately avoids manual page refreshes.
-    pollTimer = Timer.periodic(const Duration(milliseconds: 400), (_) => syncMessages());
+    // Socket.IO is intentionally not used. The chat stays near-real-time by
+    // polling the incremental messages endpoint once per second.
+    pollTimer = Timer.periodic(const Duration(seconds: 1), (_) => syncMessages());
   }
 
   Future<void> load() async {
@@ -61,7 +59,7 @@ class _ChatPageState extends State<ChatPage> {
     syncing = true;
     try {
       final remote = await api.messages(widget.session.token!, username, since: full ? null : lastCursor);
-      _mergeMessages(remote.map((e) => Map<String, dynamic>.from(e)).toList());
+      final changed = _mergeMessages(remote.map((e) => Map<String, dynamic>.from(e)).toList());
       final all = messages;
       if (all.isNotEmpty) {
         DateTime? newest;
@@ -73,9 +71,9 @@ class _ChatPageState extends State<ChatPage> {
         if (newest != null) lastCursor = newest.toUtc().toIso8601String();
       }
       await LocalCache.saveMessages(username, messages);
-      if (remote.isNotEmpty) {
+      if (changed) {
         if (mounted) setState(() {});
-        _bottom();
+        if (remote.isNotEmpty) _bottom();
       }
     } on ApiException catch (e) {
       if (e.status == 403) _showBanned();
@@ -86,36 +84,58 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  void _mergeMessages(List<Map<String, dynamic>> incoming) {
+  bool _mergeMessages(List<Map<String, dynamic>> incoming) {
+    if (incoming.isEmpty) return false;
+
     final byId = <String, Map<String, dynamic>>{};
     for (final m in messages) {
       final id = m['id']?.toString();
       if (id != null) byId[id] = m;
     }
-    for (final m in incoming) {
-      final id = m['id']?.toString();
-      if (id == null) continue;
-      byId[id] = {...?byId[id], ...m};
-    }
-    final merged = byId.values.toList()..sort((a, b) => DateTime.tryParse(a['createdAt']?.toString() ?? '')?.compareTo(DateTime.tryParse(b['createdAt']?.toString() ?? '') ?? DateTime(0)) ?? 0);
-    messages = merged;
-  }
 
-  void _receive(Map<String, dynamic> message) {
-    if (message['_event'] == 'deleted') {
-      messages.removeWhere((m) => m['id']?.toString() == message['id']?.toString());
-      if (mounted) setState(() {});
-      return;
+    bool changed = false;
+    for (final incomingMessage in incoming) {
+      final m = Map<String, dynamic>.from(incomingMessage);
+      final id = m['id']?.toString();
+      if (id == null || id.isEmpty) continue;
+
+      if (byId.containsKey(id)) {
+        final old = byId[id]!;
+        final merged = {...old, ...m};
+        if (merged.toString() != old.toString()) changed = true;
+        byId[id] = merged;
+        continue;
+      }
+
+      // If the 1-second poll returns the canonical server message before the
+      // POST response arrives, replace the local optimistic bubble instead of
+      // showing two bubbles or making the animation jump.
+      final pendingIndex = messages.indexWhere((local) =>
+          local['id']?.toString().startsWith('local-') == true &&
+          local['status']?.toString() == 'sending' &&
+          local['senderUsername']?.toString() == m['senderUsername']?.toString() &&
+          local['recipientUsername']?.toString() == m['recipientUsername']?.toString() &&
+          local['type']?.toString() == m['type']?.toString() &&
+          local['message']?.toString() == m['message']?.toString());
+
+      if (pendingIndex >= 0) {
+        final oldId = messages[pendingIndex]['id']!.toString();
+        byId.remove(oldId);
+        byId[id] = m;
+        changed = true;
+      } else {
+        byId[id] = m;
+        changed = true;
+      }
     }
-    final sender = (message['senderUsername'] ?? message['sender'])?.toString();
-    final recipient = message['recipientUsername']?.toString();
-    if (sender == username || recipient == username || sender == widget.session.username) {
-      _mergeMessages([message]);
-      LocalCache.saveMessages(username, messages);
-      if (sender == username) socket.markRead(username);
-      if (mounted) setState(() {});
-      _bottom();
-    }
+
+    final merged = byId.values.toList()
+      ..sort((a, b) => (DateTime.tryParse(a['createdAt']?.toString() ?? '') ?? DateTime(0))
+          .compareTo(DateTime.tryParse(b['createdAt']?.toString() ?? '') ?? DateTime(0)));
+
+    if (merged.length != messages.length) changed = true;
+    messages = merged;
+    return changed;
   }
 
   Future<void> _profileUpdated(Map<String, dynamic> p) async {
@@ -137,7 +157,6 @@ class _ChatPageState extends State<ChatPage> {
   void _showBanned() {
     if (!mounted) return;
     pollTimer?.cancel();
-    socket.dispose();
     Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => BannedPage(session: widget.session)), (_) => false);
   }
 
@@ -156,6 +175,7 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> sendText() async {
     final text = input.text.trim();
     if (text.isEmpty) return;
+
     input.clear();
     final temp = <String, dynamic>{
       'id': 'local-${DateTime.now().microsecondsSinceEpoch}',
@@ -166,38 +186,37 @@ class _ChatPageState extends State<ChatPage> {
       'status': 'sending',
       'createdAt': DateTime.now().toUtc().toIso8601String(),
     };
-    setState(() => messages.add(temp));
+
+    messages = [...messages, temp];
+    if (mounted) setState(() {});
     _bottom();
+
     try {
       final result = await api.sendMessage(widget.session.token!, username, text);
-      // The server also emits this same message through Socket.IO. If that
-      // event arrived before the HTTP response, it already exists in the list
-      // under the real server id. Remove both the optimistic placeholder and
-      // any socket copy before inserting the canonical server message.
-      messages.removeWhere((m) =>
-          m['id']?.toString() == temp['id']?.toString() ||
-          m['id']?.toString() == result['id']?.toString());
-      messages.add(result);
-      _mergeMessages(const []);
+      // Reconcile the optimistic message with the canonical server message.
+      // We do not remove/re-add the bubble, which keeps the send animation
+      // stable even when the 1-second poll wins the race with this POST.
+      _mergeMessages([result]);
       await LocalCache.saveMessages(username, messages);
       if (mounted) setState(() {});
       _bottom();
     } on ApiException catch (e) {
       if (e.status == 403) return _showBanned();
-      final i = messages.indexWhere((m) => m['id'] == temp['id']);
-      if (i >= 0) messages[i] = {...temp, 'status': 'failed'};
-      if (mounted) setState(() {});
+      final i = messages.indexWhere((m) => m['id']?.toString() == temp['id']?.toString());
+      if (i >= 0) {
+        messages[i] = {...messages[i], 'status': 'failed'};
+        if (mounted) setState(() {});
+      }
     } catch (_) {
-      final i = messages.indexWhere((m) => m['id'] == temp['id']);
-      if (i >= 0) messages[i] = {...temp, 'status': 'failed'};
-      if (mounted) setState(() {});
+      final i = messages.indexWhere((m) => m['id']?.toString() == temp['id']?.toString());
+      if (i >= 0) {
+        messages[i] = {...messages[i], 'status': 'failed'};
+        if (mounted) setState(() {});
+      }
     }
   }
 
   Future<void> sendMedia() async {
-    // Use the native Android Photo Picker directly. It keeps the user in the
-    // gallery instead of opening the Files app and does not require a
-    // READ_MEDIA_* permission on modern Android.
     final choice = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: const Color(0xFF151217),
@@ -215,43 +234,62 @@ class _ChatPageState extends State<ChatPage> {
               title: const Text('Pilih video'),
               onTap: () => Navigator.pop(context, 'video'),
             ),
+            ListTile(
+              leading: const Icon(Icons.insert_drive_file_outlined),
+              title: const Text('Pilih file'),
+              subtitle: const Text('Maksimal 50 MB'),
+              onTap: () => Navigator.pop(context, 'file'),
+            ),
           ],
         ),
       ),
     );
     if (choice == null) return;
 
-    final XFile? picked = choice == 'image'
-        ? await picker.pickImage(
-            source: ImageSource.gallery,
-            imageQuality: 92,
-            maxWidth: 2400,
-          )
-        : await picker.pickVideo(
-            source: ImageSource.gallery,
-            maxDuration: const Duration(minutes: 10),
-          );
-    if (picked == null) return;
-
-    final file = File(picked.path);
-    final bytes = await file.length();
-    if (bytes > 50 * 1024 * 1024) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('File maksimal 50 MB.')),
-        );
-      }
-      return;
-    }
-
-    setState(() => sendingMedia = true);
+    File? file;
+    String fileName = '';
     try {
-      final type = choice;
+      if (choice == 'image') {
+        final picked = await picker.pickImage(
+          source: ImageSource.gallery,
+          imageQuality: 92,
+          maxWidth: 2400,
+        );
+        if (picked == null) return;
+        file = File(picked.path);
+        fileName = picked.name;
+      } else if (choice == 'video') {
+        final picked = await picker.pickVideo(
+          source: ImageSource.gallery,
+          maxDuration: const Duration(minutes: 10),
+        );
+        if (picked == null) return;
+        file = File(picked.path);
+        fileName = picked.name;
+      } else {
+        final picked = await FilePicker.pickFile();
+        if (picked == null || picked.path == null) return;
+        file = File(picked.path!);
+        fileName = picked.name;
+      }
+
+      final bytes = await file.length();
+      if (bytes > 50 * 1024 * 1024) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('File maksimal 50 MB.')),
+          );
+        }
+        return;
+      }
+
+      if (!mounted) return;
+      setState(() => sendingMedia = true);
       final result = await api.uploadMedia(
         widget.session.token!,
         username,
         file,
-        type: type,
+        type: choice,
       );
       _mergeMessages([result]);
       await LocalCache.saveMessages(username, messages);
@@ -261,14 +299,12 @@ class _ChatPageState extends State<ChatPage> {
       if (e.status == 403) {
         _showBanned();
       } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message)),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Gagal mengirim media: $e')),
+          SnackBar(content: Text('Gagal mengirim $fileName: $e')),
         );
       }
     } finally {
@@ -279,7 +315,6 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void dispose() {
     pollTimer?.cancel();
-    socket.dispose();
     input.dispose();
     scroll.dispose();
     super.dispose();
@@ -346,12 +381,22 @@ class _ChatPageState extends State<ChatPage> {
         if (url.isNotEmpty) Container(width: 230, height: 160, clipBehavior: Clip.antiAlias, decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)), child: type == 'image' ? Image.network(url, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Center(child: Icon(Icons.broken_image))) : Stack(fit: StackFit.expand, children: [Container(color: Colors.black45), const Center(child: Icon(Icons.play_circle_fill, size: 54, color: Colors.white))])),
         Row(mainAxisSize: MainAxisSize.min, children: [Text(type == 'video' ? 'Video' : 'Foto', style: const TextStyle(fontSize: 12)), IconButton(onPressed: () => _download(url, type), icon: const Icon(Icons.download, size: 18))]),
       ]);
+    } else if (type == 'file') {
+      final url = message['url']?.toString() ?? message['mediaUrl']?.toString() ?? '';
+      final name = (message['fileName'] ?? message['name'] ?? message['message'] ?? 'File').toString();
+      body = Row(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.insert_drive_file_outlined, size: 34),
+        const SizedBox(width: 9),
+        Flexible(child: Text(name, maxLines: 2, overflow: TextOverflow.ellipsis)),
+        if (url.isNotEmpty) IconButton(onPressed: () => _downloadFilePlaceholder(url), icon: const Icon(Icons.download, size: 18)),
+      ]);
     } else {
       body = Text(message['message']?.toString() ?? '', style: const TextStyle(fontSize: 15));
     }
     final maxBubbleWidth = MediaQuery.sizeOf(context).width * .82;
     return Align(
       alignment: me ? Alignment.centerRight : Alignment.centerLeft,
+      key: ValueKey(message['id']?.toString() ?? '${message['createdAt']}-${message['message']}'),
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: maxBubbleWidth),
         child: Container(
@@ -387,10 +432,25 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _ticks(String status) {
-    if (status == 'failed') return const Icon(Icons.close, color: Colors.redAccent, size: 15);
-    if (status == 'read') return const Icon(Icons.done_all, color: Color(0xFF53BDEB), size: 15);
-    if (status == 'sent' || status == 'delivered') return const Icon(Icons.done_all, color: Colors.white54, size: 15);
-    return const Icon(Icons.check, color: Colors.white54, size: 15);
+    Widget icon;
+    if (status == 'failed') {
+      icon = const Icon(Icons.close, color: Colors.redAccent, size: 15);
+    } else if (status == 'read') {
+      icon = const Icon(Icons.done_all, color: Color(0xFF53BDEB), size: 15);
+    } else if (status == 'sent' || status == 'delivered') {
+      icon = const Icon(Icons.done_all, color: Colors.white54, size: 15);
+    } else if (status == 'sending') {
+      icon = const SizedBox(width: 15, height: 15, child: Padding(padding: EdgeInsets.all(2), child: CircularProgressIndicator(strokeWidth: 1.6)));
+    } else {
+      icon = const Icon(Icons.check, color: Colors.white54, size: 15);
+    }
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 180),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      transitionBuilder: (child, animation) => FadeTransition(opacity: animation, child: ScaleTransition(scale: animation, child: child)),
+      child: KeyedSubtree(key: ValueKey(status), child: icon),
+    );
   }
 
   String _time(dynamic value) {
@@ -411,7 +471,7 @@ class _ChatPageState extends State<ChatPage> {
               controller: input,
               minLines: 1,
               maxLines: 5,
-              onChanged: (v) => socket.sendTyping(username, v.isNotEmpty),
+              
               decoration: InputDecoration(
                 hintText: 'Pesan',
                 filled: true,
@@ -430,6 +490,13 @@ class _ChatPageState extends State<ChatPage> {
       ),
     ),
   );
+
+  void _downloadFilePlaceholder(String url) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('File sudah dikirim. Download file bisa ditambahkan saat endpoint download server tersedia.')),
+    );
+  }
 
   Future<void> _rename() async {
     final controller = TextEditingController(text: displayName);

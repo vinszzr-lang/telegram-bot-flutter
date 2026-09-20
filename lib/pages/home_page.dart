@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/api.dart';
 import '../services/session.dart';
-import '../services/socket_service.dart';
 import '../utils/navigation.dart';
 import '../widgets/verified_badge.dart';
 import 'add_contact_page.dart';
@@ -21,7 +20,6 @@ class _HomePageState extends State<HomePage> with RouteAware {
   final api = Api();
   final Map<String, Map<String, dynamic>> contactMap = {};
   Timer? pollTimer;
-  SocketService? socket;
   bool loading = true;
   bool syncing = false;
   bool routeSubscribed = false;
@@ -31,12 +29,7 @@ class _HomePageState extends State<HomePage> with RouteAware {
   void initState() {
     super.initState();
     refresh();
-    socket = SocketService(widget.session.token!, (_) => syncFast(), (_) {},
-      onBanned: _showBanned,
-      onProfileUpdated: _profileUpdated,
-    )..connect();
-    // Socket.IO is the immediate path. This 400 ms heartbeat is a fallback and
-    // also catches changes made from the admin website without a manual refresh.
+    // No Socket.IO: sync every second so the inbox remains near-real-time.
     _startPolling();
   }
 
@@ -54,7 +47,7 @@ class _HomePageState extends State<HomePage> with RouteAware {
 
   void _startPolling() {
     pollTimer?.cancel();
-    pollTimer = Timer.periodic(const Duration(milliseconds: 400), (_) => syncFast());
+    pollTimer = Timer.periodic(const Duration(seconds: 1), (_) => syncFast());
   }
 
   void _stopPolling() {
@@ -106,25 +99,9 @@ class _HomePageState extends State<HomePage> with RouteAware {
     }
   }
 
-  void _profileUpdated(Map<String, dynamic> p) async {
-    final oldUsername = p['oldUsername']?.toString();
-    final newUsername = p['username']?.toString();
-    if (oldUsername != null && contactMap.containsKey(oldUsername) && newUsername != null && newUsername.isNotEmpty) {
-      final old = contactMap.remove(oldUsername)!;
-      contactMap[newUsername] = {...old, ...p, 'username': newUsername};
-    } else if (newUsername != null && contactMap.containsKey(newUsername)) {
-      contactMap[newUsername] = {...contactMap[newUsername]!, ...p};
-    }
-    if (oldUsername == widget.session.username || newUsername == widget.session.username) {
-      await widget.session.updateUser(p);
-    }
-    if (mounted) setState(() {});
-  }
-
   void _showBanned() {
     if (!mounted) return;
     pollTimer?.cancel();
-    socket?.dispose();
     Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => BannedPage(session: widget.session)), (_) => false);
   }
 
@@ -132,7 +109,6 @@ class _HomePageState extends State<HomePage> with RouteAware {
   void dispose() {
     _stopPolling();
     if (routeSubscribed) chatWithURouteObserver.unsubscribe(this);
-    socket?.dispose();
     super.dispose();
   }
 

@@ -16,32 +16,25 @@ Base URL: `https://stock-staining-composure.ngrok-free.dev`
 - `PATCH /api/contacts/:username` body `{name}`
 - `DELETE /api/contacts/:username`
 
-## Fast sync / real-time fallback
+## Fast sync / near-real-time polling
 - `GET /api/sync` -> `{user,contacts,inbox,serverTime}`.
-- The Android client uses Socket.IO as the primary instant channel and a 400 ms fallback sync heartbeat (about 2.5 requests/second) so changes from the admin website are reflected without manual refresh.
+- The Android home screen polls this endpoint every 1 second while visible.
+- The chat screen polls the incremental messages endpoint every 1 second.
+- The client does not use Socket.IO.
 
 ## Chats
 - `GET /api/chats/:username/messages?since=<ISO timestamp>`
 - `POST /api/chats/:username/messages` body `{type:"text",message}`
-- `POST /api/chats/:username/media` multipart `file` + `type=image|video`; max 50 MiB
+- `POST /api/chats/:username/media` multipart `file` + `type=image|video|file`; max 50 MiB
 
 Message shape:
 `{id,type,message,url,mediaUrl,senderUsername,recipientUsername,status,createdAt,updatedAt}`
 
 Statuses: `sending`, `sent`, `delivered`, `read`, `failed`.
 
-## Socket.IO
-Handshake: `auth.token`.
-
-Server -> client:
-- `message`
-- `profile_updated` (including username/verified/avatar changes)
-- `banned`
-- `message_deleted`
-
-Client -> server:
-- `typing` `{username,typing}`
-- `read` `{username}`
+## Realtime transport
+- Socket.IO is not required by the Android client.
+- Near-real-time updates are provided by HTTP polling.
 
 ## Admin
 - `POST /api/admin/login`
