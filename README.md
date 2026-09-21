@@ -67,10 +67,3 @@ Composer sekarang punya tombol Foto langsung (gallery), Kamera, Video, dan File.
 
 ## Admin dashboard
 Buka `/admin` pada backend, misalnya `http://HOST:5201/admin`. Login memakai `ADMIN_USERNAME` dan `ADMIN_PASSWORD` dari environment Pterodactyl. Admin dapat mengatur Verified, badges, ban/unban, dan melihat statistik user.
-
-
-## Media upload fixes
-- Foto/video/file upload uses multipart form data with a 50 MB limit.
-- Upload has a 120-second timeout and clearer errors.
-- Server builds media URLs from the request host when `PUBLIC_BASE_URL` is not set, which works better behind a reverse proxy.
-- Default admin login when no environment password is set: `admin` / `admin`.
