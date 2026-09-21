@@ -11,7 +11,8 @@ const { Server } = require('socket.io');
 
 const PORT = Number(process.env.PORT || 5201);
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-pterodactyl';
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://panelbaru2.rexzystr.my.id:${PORT}`;
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
+
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -51,6 +52,7 @@ function contactFor(owner, username) {
 }
 
 const app=express();
+app.set('trust proxy', 1);
 app.use(cors({origin:true,credentials:true}));
 app.use(express.json({limit:'2mb'}));
 app.use('/uploads',express.static(UPLOAD_DIR));
@@ -86,7 +88,7 @@ app.patch('/api/auth/username',auth,async(req,res)=>{
 });
 app.post('/api/profile/avatar',auth,avatarUpload.single('file'),(req,res)=>{
   if(!req.file) return res.status(400).json({message:'File foto tidak valid.'});
-  req.user.avatarUrl=`${PUBLIC_BASE_URL}/uploads/avatars/${req.file.filename}`; save(); emitUser(req.user.username,'profile:updated',{user:safeUser(req.user)}); res.json({user:safeUser(req.user)});
+  const base=PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`; req.user.avatarUrl=`${base}/uploads/avatars/${req.file.filename}`; save(); emitUser(req.user.username,'profile:updated',{user:safeUser(req.user)}); res.json({user:safeUser(req.user)});
 });
 app.get('/api/users/:username',auth,(req,res)=>{const u=getUser(req.params.username);if(!u)return res.status(404).json({message:'User tidak ditemukan'});res.json(safeUser(u));});
 function adminAuth(req,res,next){
@@ -95,7 +97,7 @@ function adminAuth(req,res,next){
   try{const p=jwt.verify(raw.slice(7),JWT_SECRET);if(p.role!=='admin')throw new Error('role');req.admin=p;next();}catch(e){return res.status(401).json({message:'Token admin tidak valid'});}
 }
 app.post('/api/admin/login',async(req,res)=>{
-  const user=process.env.ADMIN_USERNAME||'admin'; const pass=process.env.ADMIN_PASSWORD||'change-me';
+  const user=process.env.ADMIN_USERNAME||'admin'; const pass=process.env.ADMIN_PASSWORD||'admin';
   if(String(req.body?.username||'')!==user||String(req.body?.password||'')!==pass)return res.status(401).json({message:'Login admin gagal'});
   res.json({token:jwt.sign({role:'admin',username:user},JWT_SECRET,{expiresIn:'7d'})});
 });
@@ -122,11 +124,22 @@ app.get('/api/sync',auth,(req,res)=>{const contacts=db.contacts.filter(c=>c.owne
 
 app.get('/api/chats/:username/messages',auth,(req,res)=>{const other=String(req.params.username);let msgs=visibleMessages(req.user.username,other);const since=req.query.since?Date.parse(req.query.since):NaN;if(Number.isFinite(since))msgs=msgs.filter(m=>Date.parse(m.updatedAt||m.createdAt)>since);res.json(msgs.map(messageOut));});
 app.post('/api/chats/:username/messages',auth,(req,res)=>{const other=String(req.params.username);if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});const text=String(req.body?.message||'').trim();if(!text)return res.status(400).json({message:'Pesan kosong'});const m={id:id(),type:'text',message:text,url:'',mediaUrl:'',senderUsername:req.user.username,recipientUsername:other,status:'sent',createdAt:now(),updatedAt:now()};db.messages.push(m);save();emitUser(other,'message:new',messageOut(m));emitUser(req.user.username,'message:new',messageOut(m));res.json(m);});
-app.post('/api/chats/:username/media',auth,mediaUpload.single('file'),(req,res)=>{const other=String(req.params.username);if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});if(!req.file)return res.status(400).json({message:'File tidak valid'});const type=['image','video','file'].includes(req.body?.type)?req.body.type:'file'; const mime=String(req.file.mimetype||'').toLowerCase(); if(type==='image'&&!mime.startsWith('image/')) return res.status(400).json({message:'Lampiran bukan foto.'}); if(type==='video'&&!mime.startsWith('video/')) return res.status(400).json({message:'Lampiran bukan video.'});const url=`${PUBLIC_BASE_URL}/uploads/media/${req.file.filename}`;const m={id:id(),type,message:req.file.originalname,url,mediaUrl:url,fileName:req.file.originalname,mimeType:req.file.mimetype,senderUsername:req.user.username,recipientUsername:other,status:'sent',createdAt:now(),updatedAt:now()};db.messages.push(m);save();emitUser(other,'message:new',m);emitUser(req.user.username,'message:new',m);res.json(m);});
+app.post('/api/chats/:username/media',auth,mediaUpload.single('file'),(req,res)=>{const other=String(req.params.username);if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});if(!req.file)return res.status(400).json({message:'File tidak valid'});const type=['image','video','file'].includes(req.body?.type)?req.body.type:'file'; const mime=String(req.file.mimetype||'').toLowerCase(); if(type==='image'&&!mime.startsWith('image/')) return res.status(400).json({message:'Lampiran bukan foto.'}); if(type==='video'&&!mime.startsWith('video/')) return res.status(400).json({message:'Lampiran bukan video.'});const base=PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`; const url=`${base}/uploads/media/${req.file.filename}`;const m={id:id(),type,message:req.file.originalname,url,mediaUrl:url,fileName:req.file.originalname,mimeType:req.file.mimetype,senderUsername:req.user.username,recipientUsername:other,status:'sent',createdAt:now(),updatedAt:now()};db.messages.push(m);save();emitUser(other,'message:new',m);emitUser(req.user.username,'message:new',m);res.json(m);});
 app.post('/api/chats/:username/read',auth,(req,res)=>{const other=String(req.params.username);db.messages.forEach(m=>{if(m.senderUsername===other&&m.recipientUsername===req.user.username)m.status='read';});save();emitUser(other,'message:read',{username:req.user.username,other});res.json({ok:true});});
 app.post('/api/chats/:username/clear',auth,(req,res)=>{const other=String(req.params.username);db.hidden=db.hidden.filter(h=>!(h.owner===req.user.username&&h.other===other));db.hidden.push({owner:req.user.username,other,before:now()});save();res.json({ok:true});});
 app.get('/api/chats/:username/search',auth,(req,res)=>{const q=String(req.query.q||'').trim().toLowerCase();if(!q)return res.json([]);res.json(visibleMessages(req.user.username,String(req.params.username)).filter(m=>String(m.message||m.fileName||'').toLowerCase().includes(q)).map(messageOut));});
 app.get('/api/chats/:username/media',auth,(req,res)=>{const msgs=visibleMessages(req.user.username,String(req.params.username));res.json({media:msgs.filter(m=>m.type==='image'||m.type==='video'),docs:msgs.filter(m=>m.type==='file'),links:msgs.filter(m=>m.type==='text'&&/(https?:\/\/|www\.)/i.test(m.message||''))});});
+
+app.use((err, req, res, next) => {
+  if (err && (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError')) {
+    return res.status(413).json({message: 'File terlalu besar. Maksimal 50 MB.'});
+  }
+  if (err) {
+    console.error('[SERVER ERROR]', err);
+    return res.status(500).json({message: 'Terjadi kesalahan server.'});
+  }
+  next();
+});
 
 const server=http.createServer(app); const io=new Server(server,{cors:{origin:'*'}});
 const sockets=new Map();

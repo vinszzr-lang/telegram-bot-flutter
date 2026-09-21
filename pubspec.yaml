@@ -1,7 +1,7 @@
 name: chatwithu
 description: "ChatWithU - private realtime messaging client"
 publish_to: "none"
-version: 1.3.0+7
+version: 1.4.0+8
 
 environment:
   sdk: ">=3.10.0 <4.0.0"

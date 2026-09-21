@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -18,6 +19,26 @@ class _ProfilePageState extends State<ProfilePage> {
   final picker = ImagePicker();
   bool uploading = false;
   bool changingUsername = false;
+  Timer? refreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    refreshTimer = Timer.periodic(const Duration(seconds: 1), (_) => _refreshProfile());
+  }
+
+  Future<void> _refreshProfile() async {
+    final token = widget.session.token;
+    if (token == null) return;
+    try {
+      final data = await api.me(token);
+      final user = Map<String, dynamic>.from(data['user'] ?? data);
+      await widget.session.updateUser(user);
+      if (mounted) setState(() {});
+    } on ApiException catch (e) {
+      if (e.status == 403) _showBanned();
+    } catch (_) {}
+  }
 
   void _showBanned() {
     if (!mounted) return;
@@ -106,6 +127,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   void dispose() {
+    refreshTimer?.cancel();
     super.dispose();
   }
 

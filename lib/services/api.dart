@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
@@ -103,17 +104,45 @@ class Api {
       Map<String, dynamic>.from(await request('POST', '/api/chats/${Uri.encodeComponent(username)}/messages', token: token, body: {'type': 'text', 'message': message}));
 
   Future<Map<String, dynamic>> uploadMedia(String token, String username, File file, {String type = 'video'}) async {
-    final req = http.MultipartRequest('POST', uri('/api/chats/${Uri.encodeComponent(username)}/media'));
+    final endpoint = uri('/api/chats/${Uri.encodeComponent(username)}/media');
+    final req = http.MultipartRequest('POST', endpoint);
     req.headers['Authorization'] = 'Bearer $token';
+    req.headers['Accept'] = 'application/json';
     req.fields['type'] = type;
-    req.files.add(await http.MultipartFile.fromPath('file', file.path));
-    final res = await req.send();
+
+    final length = await file.length();
+    if (length <= 0) throw ApiException(400, 'File kosong atau tidak dapat dibaca.');
+    if (length > 50 * 1024 * 1024) throw ApiException(413, 'File maksimal 50 MB.');
+
+    final name = file.path.split(RegExp(r'[/\\\\]')).last;
+    final part = await http.MultipartFile.fromPath(
+      'file',
+      file.path,
+      filename: name.isEmpty ? 'upload' : name,
+    );
+    req.files.add(part);
+
+    http.StreamedResponse res;
+    try {
+      res = await req.send().timeout(const Duration(seconds: 120));
+    } on TimeoutException {
+      throw ApiException(408, 'Upload terlalu lama. Coba lagi dengan file yang lebih kecil.');
+    } on SocketException catch (e) {
+      throw ApiException(0, 'Tidak dapat terhubung ke server: ${e.message}');
+    }
+
     final text = await res.stream.bytesToString();
     dynamic data;
-    try { data = jsonDecode(text); } catch (_) { data = {'message': text}; }
+    try { data = text.isEmpty ? <String, dynamic>{} : jsonDecode(text); }
+    catch (_) { data = {'message': text}; }
+
     if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw ApiException(res.statusCode, (data is Map ? (data['message'] ?? 'Upload gagal') : 'Upload gagal').toString());
+      throw ApiException(
+        res.statusCode,
+        (data is Map ? (data['message'] ?? data['error'] ?? 'Upload gagal') : 'Upload gagal').toString(),
+      );
     }
-    return Map<String, dynamic>.from(data as Map);
+    if (data is! Map) throw ApiException(502, 'Server mengirim respons upload yang tidak valid.');
+    return Map<String, dynamic>.from(data);
   }
 }

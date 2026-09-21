@@ -33,7 +33,7 @@ class _HomePageState extends State<HomePage> with RouteAware {
   void _onMessage(dynamic raw){if(raw is! Map)return;final sender=raw['senderUsername']?.toString();final recipient=raw['recipientUsername']?.toString();if(sender==null||recipient==null)return;if(recipient!=widget.session.username)return;final c=contactMap[sender];final name=(c?['name']??c?['displayName']??sender).toString();_showBanner('$name mengirim pesan baru');syncFast();}
   void _showBanner(String text){bannerTimer?.cancel();if(!mounted)return;setState(()=>bannerText=text);bannerTimer=Timer(const Duration(seconds:4),(){if(mounted)setState(()=>bannerText=null);});}
   void _clearBanner(){bannerTimer?.cancel();if(mounted)setState(()=>bannerText=null);}
-  void _startPolling(){pollTimer?.cancel();pollTimer=Timer.periodic(const Duration(seconds:3),(_)=>syncFast());}
+  void _startPolling(){pollTimer?.cancel();pollTimer=Timer.periodic(const Duration(seconds:1),(_)=>syncFast());}
   void _stopPolling(){pollTimer?.cancel();pollTimer=null;}
   @override void didPushNext(){_stopPolling();}
   @override void didPopNext(){_clearBanner();_startPolling();syncFast();}
