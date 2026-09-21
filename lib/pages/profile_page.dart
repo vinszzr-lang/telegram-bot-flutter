@@ -41,9 +41,8 @@ class _ProfilePageState extends State<ProfilePage> {
     try {
       final length = await file.length();
       if (length <= 0) throw Exception('Foto tidak dapat dibaca.');
-      final name = picked.name.toLowerCase();
-      final okExt = RegExp(r'\.(jpg|jpeg|png|webp|heic|heif)$').hasMatch(name);
-      if (!okExt) throw Exception('File bukan gambar yang didukung.');
+      // image_picker already guarantees an image from the Android gallery/photo picker.
+      // Do not reject provider-generated filenames/extensions here.
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Foto tidak valid: $e')));
       return;

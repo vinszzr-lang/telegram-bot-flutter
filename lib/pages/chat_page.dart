@@ -390,7 +390,24 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     if(choice==null)return;
     if(choice=='default'){await LocalCache.setWallpaper(username,'');if(mounted)setState(()=>wallpaperPath=null);return;}
     final picked=await picker.pickImage(source:ImageSource.gallery,imageQuality:88,maxWidth:2200,maxHeight:2200);if(picked==null)return;
-    final dir=await getApplicationDocumentsDirectory();final dest=File('${dir.path}/wallpaper_$username.jpg');await File(picked.path).copy(dest.path);await LocalCache.setWallpaper(username,dest.path);if(mounted)setState(()=>wallpaperPath=dest.path);
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final oldPath = await LocalCache.wallpaper(username);
+      if (oldPath != null && oldPath.isNotEmpty) {
+        final old = File(oldPath);
+        if (await old.exists()) { try { await old.delete(); } catch (_) {} }
+      }
+      // Use a unique filename every time. Reusing wallpaper_$username.jpg can
+      // make Flutter's image cache show the previous wallpaper after switching.
+      final extMatch = RegExp(r'\.(jpg|jpeg|png|webp|heic|heif)$', caseSensitive: false).firstMatch(picked.name);
+      final ext = extMatch == null ? 'jpg' : extMatch.group(1)!.toLowerCase();
+      final dest = File('${dir.path}/wallpaper_${username}_${DateTime.now().microsecondsSinceEpoch}.$ext');
+      await File(picked.path).copy(dest.path);
+      await LocalCache.setWallpaper(username, dest.path);
+      if (mounted) setState(() => wallpaperPath = dest.path);
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal memasang wallpaper: $e')));
+    }
   }
 
   @override
@@ -482,7 +499,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     );
   }
 
-  Widget _wallpaper(){if(wallpaperPath!=null&&wallpaperPath!.isNotEmpty&&File(wallpaperPath!).existsSync())return Image.file(File(wallpaperPath!),fit:BoxFit.cover);return Image.asset('assets/chat_background.jpg',fit:BoxFit.cover,alignment:Alignment.topCenter,filterQuality:FilterQuality.low);}
+  Widget _wallpaper(){if(wallpaperPath!=null&&wallpaperPath!.isNotEmpty&&File(wallpaperPath!).existsSync())return Image.file(File(wallpaperPath!),key:ValueKey(wallpaperPath),fit:BoxFit.cover);return Image.asset('assets/chat_background.jpg',fit:BoxFit.cover,alignment:Alignment.topCenter,filterQuality:FilterQuality.low);}
   Widget _dayChip(dynamic v)=>Padding(padding:const EdgeInsets.symmetric(vertical:8),child:Container(padding:const EdgeInsets.symmetric(horizontal:12,vertical:6),decoration:BoxDecoration(color:const Color(0xFF1E292D),borderRadius:BorderRadius.circular(12)),child:Text(_dayLabel(v),style:const TextStyle(fontSize:12,color:Colors.white70))));
   String _dayKey(dynamic v){final d=DateTime.tryParse(v?.toString()??'')?.toLocal();return d==null?'':'${d.year}-${d.month}-${d.day}';}
   String _dayLabel(dynamic v){final d=DateTime.tryParse(v?.toString()??'')?.toLocal();if(d==null)return'';final n=DateTime.now();final diff=DateTime(n.year,n.month,n.day).difference(DateTime(d.year,d.month,d.day)).inDays;if(diff==0)return'Hari Ini';if(diff==1)return'Kemarin';const m=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];return'${d.day} ${m[d.month-1]} ${d.year}';}
