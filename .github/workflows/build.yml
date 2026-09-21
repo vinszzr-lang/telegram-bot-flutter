@@ -62,8 +62,17 @@ jobs:
       - name: Test
         run: flutter test
 
+      - name: Fix Gradle wrapper permissions
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          test -x gradlew
+
       - name: Verify Gradle wrapper
         working-directory: android
+        shell: bash
         run: ./gradlew --version
 
       - name: Build APK - Split ABI
