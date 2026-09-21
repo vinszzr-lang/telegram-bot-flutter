@@ -17,3 +17,7 @@ The GitHub Actions workflow still runs `flutter analyze`, `flutter test`, and re
 - Release CI previously compiled `CHATWITHU_BASE_URL` with an old ngrok URL. This is now fixed to `http://panelbaru2.rexzystr.my.id:5201`.
 - `android:usesCleartextTraffic` is enabled because the configured endpoint is HTTP, not HTTPS.
 - `lib/services/api.dart` keeps `/api/auth/login` as the login endpoint; no application feature was removed.
+
+## 2026-09-21 build fix
+- Fixed `Undefined name 'Uint8List'` in `lib/pages/chat_page.dart` by importing `dart:typed_data`.
+- This was a Dart compile-time import omission, not a Pterodactyl/server issue.
