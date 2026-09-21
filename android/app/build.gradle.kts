@@ -5,9 +5,8 @@ plugins {
 
 android {
     namespace = "com.vinzz.chatwithu"
-    compileSdk = 36
-    ndkVersion = "28.2.13676358"
-    defaultConfig { applicationId = "com.vinzz.chatwithu"; minSdk = 24; targetSdk = 36; versionCode = 4; versionName = "1.2.0" }
+    compileSdk = flutter.compileSdkVersion
+    defaultConfig { applicationId = "com.vinzz.chatwithu"; minSdk = 24; targetSdk = flutter.targetSdkVersion; versionCode = 4; versionName = "1.2.0" }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

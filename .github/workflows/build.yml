@@ -34,24 +34,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "Android SDK root: ${ANDROID_SDK_ROOT:-${ANDROID_HOME:-not-set}}"
-          echo "sdkmanager: $(command -v sdkmanager)"
           sdkmanager --version
-
           yes | sdkmanager --licenses >/dev/null || true
-
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "ndk;28.2.13676358"
+            "build-tools;36.0.0"
 
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.47.4'
           channel: stable
           cache: true
+
+      - name: Verify toolchain
+        run: |
+          flutter --version
+          flutter doctor -v
+
+      - name: Verify Dart SDK compatibility
+        run: |
+          dart --version
+          flutter --version
 
       - name: Flutter pub get
         run: flutter pub get

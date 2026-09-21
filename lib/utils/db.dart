@@ -20,6 +20,11 @@ class LocalCache {
     }
   }
 
+  static Future<void> clearLocalMessages(String username) async {
+    final p = await SharedPreferences.getInstance();
+    await p.remove('chat_$username');
+  }
+
   static String _readKey(String username) => 'chat_read_$username';
 
   static Future<void> markRead(String username, String isoTime) async {
@@ -32,5 +37,17 @@ class LocalCache {
     final raw = p.getString(_readKey(username));
     if (raw == null || raw.isEmpty) return null;
     return DateTime.tryParse(raw)?.toUtc();
+  }
+
+  static String _wallpaperKey(String username) => 'chat_wallpaper_$username';
+
+  static Future<void> setWallpaper(String username, String path) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_wallpaperKey(username), path);
+  }
+
+  static Future<String?> wallpaper(String username) async {
+    final p = await SharedPreferences.getInstance();
+    return p.getString(_wallpaperKey(username));
   }
 }

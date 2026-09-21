@@ -55,3 +55,8 @@ flutter build apk --release --dart-define=CHATWITHU_BASE_URL=http://panelbaru2.r
 APK: `build/app/outputs/flutter-apk/app-release.apk`
 
 The release build uses the ChatWithU Pterodactyl endpoint configured by CHATWITHU_BASE_URL. It is configured for test sideloading using the runner's debug keystore. Use a private release keystore before publishing publicly.
+
+
+## GitHub Actions build
+
+The repository is intended to be uploaded with `.github/` and `pubspec.yaml` at the repository root. The workflow uses Flutter 3.47.4 / Dart 3.13.3, Java 17, Gradle 8.14, AGP 8.11.1, and Kotlin 2.2.20.

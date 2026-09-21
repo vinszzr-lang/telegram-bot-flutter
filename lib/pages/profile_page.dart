@@ -37,9 +37,20 @@ class _ProfilePageState extends State<ProfilePage> {
       maxWidth: 1200,
     );
     if (picked == null) return;
+    final file = File(picked.path);
+    try {
+      final length = await file.length();
+      if (length <= 0) throw Exception('Foto tidak dapat dibaca.');
+      final name = picked.name.toLowerCase();
+      final okExt = RegExp(r'\.(jpg|jpeg|png|webp|heic|heif)$').hasMatch(name);
+      if (!okExt) throw Exception('File bukan gambar yang didukung.');
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Foto tidak valid: $e')));
+      return;
+    }
     setState(() => uploading = true);
     try {
-      final data = await api.uploadAvatar(widget.session.token!, File(picked.path));
+      final data = await api.uploadAvatar(widget.session.token!, file);
       await widget.session.updateUser(Map<String, dynamic>.from(data['user']));
       if (mounted) setState(() {});
     } on ApiException catch (e) {

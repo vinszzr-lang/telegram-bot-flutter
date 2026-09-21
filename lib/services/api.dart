@@ -86,6 +86,19 @@ class Api {
     return List<dynamic>.from(await request('GET', '/api/chats/${Uri.encodeComponent(username)}/messages$query', token: token));
   }
 
+
+  Future<void> markRead(String token, String username) async =>
+      await request('POST', '/api/chats/${Uri.encodeComponent(username)}/read', token: token);
+
+  Future<void> clearChat(String token, String username) async =>
+      await request('POST', '/api/chats/${Uri.encodeComponent(username)}/clear', token: token);
+
+  Future<List<dynamic>> searchMessages(String token, String username, String q) async =>
+      List<dynamic>.from(await request('GET', '/api/chats/${Uri.encodeComponent(username)}/search?q=${Uri.encodeQueryComponent(q)}', token: token));
+
+  Future<Map<String, dynamic>> chatMedia(String token, String username) async =>
+      Map<String, dynamic>.from(await request('GET', '/api/chats/${Uri.encodeComponent(username)}/media', token: token));
+
   Future<Map<String, dynamic>> sendMessage(String token, String username, String message) async =>
       Map<String, dynamic>.from(await request('POST', '/api/chats/${Uri.encodeComponent(username)}/messages', token: token, body: {'type': 'text', 'message': message}));
 
