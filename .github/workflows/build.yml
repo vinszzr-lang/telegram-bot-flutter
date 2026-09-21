@@ -18,7 +18,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Setup Android SDK tools
         uses: android-actions/setup-android@v4
@@ -46,6 +45,14 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Configure clean Gradle home
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "GRADLE_USER_HOME=$RUNNER_TEMP/gradle-home" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/gradle-home"
+          rm -rf "$RUNNER_TEMP/gradle-home/wrapper/dists/gradle-8.14.5-bin"
+
       - name: Verify toolchain
         run: |
           set -euo pipefail
@@ -70,27 +77,19 @@ jobs:
           chmod +x gradlew
           test -x gradlew
 
-      - name: Restore official Gradle 8.14.5 wrapper JAR
+      - name: Bootstrap Gradle 8.14.5 with clean permissions
         working-directory: android
         shell: bash
         run: |
           set -euo pipefail
-          url="https://services.gradle.org/distributions/gradle-8.14.5-wrapper.jar"
-          expected="7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172"
-          tmp="gradle/wrapper/gradle-wrapper.jar.download"
-          curl --fail --location --retry 4 --retry-delay 2 --connect-timeout 20 --max-time 120 "$url" -o "$tmp"
-          actual="$(sha256sum "$tmp" | awk '{print $1}')"
-          test "$actual" = "$expected" || {
-            echo "ERROR: Gradle wrapper checksum mismatch: $actual" >&2
-            exit 1
-          }
-          mv "$tmp" gradle/wrapper/gradle-wrapper.jar
-          echo "Gradle wrapper checksum verified: $actual"
-
-      - name: Verify Gradle wrapper
-        working-directory: android
-        shell: bash
-        run: ./gradlew --version
+          umask 022
+          chmod +x gradlew
+          ./gradlew --version
+          gradle_bin="$(find "$GRADLE_USER_HOME/wrapper/dists/gradle-8.14.5-bin" -type f -path '*/bin/gradle' -print -quit)"
+          test -n "$gradle_bin"
+          chmod +x "$gradle_bin"
+          test -x "$gradle_bin"
+          echo "Gradle executable verified: $gradle_bin"
 
       - name: Build APK - Split ABI
         run: |
