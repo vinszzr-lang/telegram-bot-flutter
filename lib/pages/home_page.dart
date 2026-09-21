@@ -54,17 +54,29 @@ class _HomePageState extends State<HomePage> with RouteAware {
       backgroundColor: const Color(0xFF080D10),
       appBar: AppBar(
         backgroundColor: const Color(0xFF080D10),
-        title: const Text('ChatWithU', style: TextStyle(fontSize: 23, fontWeight: FontWeight.w800)),
-        actions: [IconButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ProfilePage(session: widget.session))).then((_) => refresh()), icon: const Icon(Icons.more_vert))],
+        elevation: 0,
+        titleSpacing: 16,
+        title: Row(children: [
+          Container(width: 40, height: 40, decoration: BoxDecoration(borderRadius: BorderRadius.circular(13), gradient: const LinearGradient(colors: [Color(0xFF6C4DFF), Color(0xFF20C76B)])), child: const Icon(Icons.forum_rounded, size: 22)),
+          const SizedBox(width: 10),
+          const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('ChatWithU', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900)), Text('Private • Realtime', style: TextStyle(fontSize: 10, color: Colors.white54))]),
+        ]),
+        actions: [IconButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ProfilePage(session: widget.session))).then((_) => refresh()), icon: const Icon(Icons.account_circle_outlined, size: 27))],
       ),
       body: Column(
         children: [
           if (bannerText != null) _NotificationBanner(text: bannerText!, onClose: _clearBanner),
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 4, 14, 10),
+            padding: const EdgeInsets.fromLTRB(14, 6, 14, 12),
             child: TextField(
               onChanged: (v) => setState(() => search = v.toLowerCase()),
-              decoration: InputDecoration(hintText: 'Cari...', prefixIcon: const Icon(Icons.search), filled: true, fillColor: const Color(0xFF20272B), border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none)),
+              decoration: InputDecoration(
+                hintText: 'Cari teman atau username',
+                prefixIcon: const Icon(Icons.search_rounded),
+                filled: true,
+                fillColor: const Color(0xFF171F23),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
+              ),
             ),
           ),
           Expanded(
@@ -93,7 +105,7 @@ class _HomePageState extends State<HomePage> with RouteAware {
     );
   }
 
-  Widget _tile(Map<String,dynamic> c){final u=(c['username']??'').toString();final name=(c['name']??c['displayName']??u).toString();final avatar=(c['avatarUrl']??'').toString();final verified=c['verified']==true;return ListTile(contentPadding:const EdgeInsets.symmetric(horizontal:16,vertical:4),leading:CircleAvatar(radius:25,backgroundColor:const Color(0xFF2A1D38),backgroundImage:avatar.isNotEmpty?NetworkImage(avatar):null,child:avatar.isEmpty?Text(name.isEmpty?'?':name[0].toUpperCase()):null),title:Row(children:[Flexible(child:Text(name,style:const TextStyle(fontWeight:FontWeight.w700),overflow:TextOverflow.ellipsis)),if(verified)const Padding(padding:EdgeInsets.only(left:5),child:VerifiedBadge())]),subtitle:Text(c['lastMessage']?.toString().isNotEmpty==true?c['lastMessage'].toString():'@$u',maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(color:Colors.white54)),trailing:Column(mainAxisAlignment:MainAxisAlignment.center,crossAxisAlignment:CrossAxisAlignment.end,children:[if(c['lastMessageAt']!=null)Text(_listTime(c['lastMessageAt']),style:const TextStyle(fontSize:11,color:Colors.white54)),if((c['unread']??0)>0)Container(margin:const EdgeInsets.only(top:5),padding:const EdgeInsets.symmetric(horizontal:7,vertical:3),decoration:BoxDecoration(color:const Color(0xFF6C4DFF),borderRadius:BorderRadius.circular(20)),child:Text('${c['unread']}',style:const TextStyle(fontSize:11,fontWeight:FontWeight.bold)))]),onTap:()async{final lastRaw=c['lastMessageAt']?.toString();final last=lastRaw==null?DateTime.now().toUtc():DateTime.tryParse(lastRaw)?.toUtc()??DateTime.now().toUtc();c['unread']=0;await LocalCache.markRead(u,last.toIso8601String());_clearBanner();if(!mounted)return;await Navigator.push(context,MaterialPageRoute(builder:(_)=>ChatPage(session:widget.session,contact:c)));_clearBanner();await refresh();});}
+  Widget _tile(Map<String,dynamic> c){final u=(c['username']??'').toString();final name=(c['name']??c['displayName']??u).toString();final avatar=(c['avatarUrl']??'').toString();final verified=c['verified']==true;final unread=(c['unread']??0) as int;return Container(margin:const EdgeInsets.symmetric(horizontal:10,vertical:3),decoration:BoxDecoration(color:const Color(0xFF10171A),borderRadius:BorderRadius.circular(18),border:Border.all(color:Colors.white.withValues(alpha: .035))),child:ListTile(contentPadding:const EdgeInsets.symmetric(horizontal:12,vertical:5),leading:Stack(children:[CircleAvatar(radius:27,backgroundColor:const Color(0xFF2A1D38),backgroundImage:avatar.isNotEmpty?NetworkImage(avatar):null,child:avatar.isEmpty?Text(name.isEmpty?'?':name[0].toUpperCase(),style:const TextStyle(fontWeight:FontWeight.w800)):null),if(unread>0)Positioned(right:-1,bottom:-1,child:Container(width:15,height:15,decoration:const BoxDecoration(color:Color(0xFF20C76B),shape:BoxShape.circle),child:Center(child:Text(unread>9?'9+':'$unread',style:const TextStyle(fontSize:7,fontWeight:FontWeight.w900)))))]),title:Row(children:[Flexible(child:Text(name,style:const TextStyle(fontWeight:FontWeight.w800),overflow:TextOverflow.ellipsis)),if(verified)const Padding(padding:EdgeInsets.only(left:5),child:VerifiedBadge())]),subtitle:Padding(padding:const EdgeInsets.only(top:4),child:Text(c['lastMessage']?.toString().isNotEmpty==true?c['lastMessage'].toString():'@$u',maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(color:Colors.white54))),trailing:Text(c['lastMessageAt']!=null?_listTime(c['lastMessageAt']):'',style:TextStyle(fontSize:11,color:unread>0?const Color(0xFF20C76B):Colors.white38,fontWeight:unread>0?FontWeight.w700:FontWeight.normal)),onTap:()async{final lastRaw=c['lastMessageAt']?.toString();final last=lastRaw==null?DateTime.now().toUtc():DateTime.tryParse(lastRaw)?.toUtc()??DateTime.now().toUtc();c['unread']=0;await LocalCache.markRead(u,last.toIso8601String());_clearBanner();if(!mounted)return;await Navigator.push(context,MaterialPageRoute(builder:(_)=>ChatPage(session:widget.session,contact:c)));_clearBanner();await refresh();}));}
   String _listTime(dynamic value){final d=DateTime.tryParse(value.toString())?.toLocal();if(d==null)return'';final now=DateTime.now();final today=DateTime(now.year,now.month,now.day);final day=DateTime(d.year,d.month,d.day);final diff=today.difference(day).inDays;if(diff==0)return'${d.hour.toString().padLeft(2,'0')}:${d.minute.toString().padLeft(2,'0')}';if(diff==1)return'Kemarin';return'${d.day.toString().padLeft(2,'0')}/${d.month.toString().padLeft(2,'0')}/${d.year}';}
 }
 class _NotificationBanner extends StatelessWidget{final String text;final VoidCallback onClose;const _NotificationBanner({required this.text,required this.onClose});@override Widget build(BuildContext context)=>Material(color:const Color(0xFF1E3B31),child:InkWell(onTap:onClose,child:Padding(padding:const EdgeInsets.symmetric(horizontal:16,vertical:11),child:Row(children:[const Icon(Icons.notifications_active_outlined,size:20),const SizedBox(width:10),Expanded(child:Text(text,style:const TextStyle(fontWeight:FontWeight.w600))),IconButton(onPressed:onClose,icon:const Icon(Icons.close,size:18))]))));}

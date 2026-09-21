@@ -194,7 +194,15 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!scroll.hasClients) return;
       final target = scroll.position.maxScrollExtent;
-      if (jump) scroll.jumpTo(target); else scroll.animateTo(target, duration: const Duration(milliseconds: 140), curve: Curves.easeOut);
+      if (jump) {
+        scroll.jumpTo(target);
+      } else {
+        scroll.animateTo(
+          target,
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOut,
+        );
+      }
     });
   }
 
@@ -232,32 +240,127 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   void _markFailed(String id) { final i=messages.indexWhere((m)=>m['id']?.toString()==id); if(i>=0){messages[i]={...messages[i],'status':'failed'};if(mounted)setState((){});} }
 
-  Future<void> sendMedia() async {
-    final choice = await showModalBottomSheet<String>(context: context, backgroundColor: const Color(0xFF151B1E), shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(22))), builder: (sheetContext)=>SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children:[
-      const SizedBox(height:10),
-      ListTile(leading:const Icon(Icons.photo_library_outlined),title:const Text('Galeri'),subtitle:const Text('Foto atau video'),onTap:()=>Navigator.pop(sheetContext,'gallery')),
-      ListTile(leading:const Icon(Icons.insert_drive_file_outlined),title:const Text('Dokumen'),subtitle:const Text('File hingga 50 MB'),onTap:()=>Navigator.pop(sheetContext,'file')),
-      const SizedBox(height:8),
-    ])));
-    if(choice==null)return;
-    File? selected; String fileName=''; String type='file';
+  Future<void> _sendPickedMedia(XFile picked, {required String type}) async {
+    final file = File(picked.path);
+    final fileName = picked.name;
     try {
-      if(choice=='gallery'){
-        final picked=await picker.pickMedia(imageQuality:92,maxWidth:2400,maxHeight:2400);
-        if(picked==null)return;
-        selected=File(picked.path); fileName=picked.name;
-        final mime=(picked.mimeType??'').toLowerCase();
-        if(mime.startsWith('video/')) type='video'; else if(mime.startsWith('image/')) type='image'; else {final ext=fileName.toLowerCase(); type=(RegExp(r'\.(mp4|mov|mkv|webm|avi|3gp)$').hasMatch(ext))?'video':'image';}
-      }else{
-        final picked=await FilePicker.pickFile(); if(picked==null||picked.path==null)return; selected=File(picked.path!); fileName=picked.name; type='file';
+      final size = await file.length();
+      if (size <= 0) throw Exception('Foto/video tidak dapat dibaca.');
+      if (size > 50 * 1024 * 1024) throw Exception('File maksimal 50 MB.');
+
+      if (type == 'image') {
+        final approved = await _previewImage(file, fileName);
+        if (!approved) return;
       }
-      if(selected==null)return;
-      final file=selected; final size=await file.length(); if(size<=0)throw Exception('File kosong atau tidak dapat dibaca.'); if(size>50*1024*1024)throw Exception('File maksimal 50 MB.');
-      if(mounted)setState(()=>sendingMedia=true);
-      final result=await api.uploadMedia(widget.session.token!,username,file,type:type); _mergeMessages([result]); await LocalCache.saveMessages(username,messages); if(mounted)setState((){}); _bottom();
-    } on ApiException catch(e){if(e.status==403)_showBanned();else if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.message)));}
-    catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal mengirim $fileName: $e')));}
-    finally{if(mounted)setState(()=>sendingMedia=false);}
+      if (!mounted) return;
+      setState(() => sendingMedia = true);
+      final result = await api.uploadMedia(widget.session.token!, username, file, type: type);
+      _mergeMessages([result]);
+      await LocalCache.saveMessages(username, messages);
+      if (mounted) setState(() {});
+      _bottom();
+    } on ApiException catch (e) {
+      if (e.status == 403) {
+        _showBanned();
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal mengirim $fileName: $e')));
+    } finally {
+      if (mounted) setState(() => sendingMedia = false);
+    }
+  }
+
+  Future<bool> _previewImage(File file, String fileName) async {
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF10171A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(26))),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(child: Container(width: 42, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(10)))),
+              const SizedBox(height: 14),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 420),
+                  child: Image.file(file, fit: BoxFit.contain),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(fileName, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 14),
+              Row(children: [
+                Expanded(child: OutlinedButton(onPressed: () => Navigator.pop(sheetContext, false), child: const Text('Batal'))),
+                const SizedBox(width: 10),
+                Expanded(child: FilledButton.icon(onPressed: () => Navigator.pop(sheetContext, true), icon: const Icon(Icons.send_rounded), label: const Text('Kirim'))),
+              ]),
+            ],
+          ),
+        ),
+      ),
+    );
+    return result == true;
+  }
+
+  Future<void> _pickPhoto() async {
+    final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 92, maxWidth: 2400, maxHeight: 2400);
+    if (picked != null) await _sendPickedMedia(picked, type: 'image');
+  }
+
+  Future<void> _takePhoto() async {
+    final picked = await picker.pickImage(source: ImageSource.camera, imageQuality: 92, maxWidth: 2400, maxHeight: 2400);
+    if (picked != null) await _sendPickedMedia(picked, type: 'image');
+  }
+
+  Future<void> _pickVideo() async {
+    final picked = await picker.pickVideo(source: ImageSource.gallery, maxDuration: const Duration(minutes: 10));
+    if (picked != null) await _sendPickedMedia(picked, type: 'video');
+  }
+
+  Future<void> _pickDocument() async {
+    final picked = await FilePicker.pickFile();
+    if (picked == null || picked.path == null) return;
+    await _sendPickedMedia(XFile(picked.path!, name: picked.name), type: 'file');
+  }
+
+  Future<void> sendMedia() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF10171A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(26))),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 18),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(width: 42, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(10))),
+            const SizedBox(height: 14),
+            const Align(alignment: Alignment.centerLeft, child: Text('Kirim lampiran', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800))),
+            const SizedBox(height: 12),
+            Row(children: [
+              Expanded(child: _AttachmentChoice(icon: Icons.photo_rounded, label: 'Foto', color: const Color(0xFF6C4DFF), onTap: () => Navigator.pop(sheetContext, 'photo'))),
+              const SizedBox(width: 10),
+              Expanded(child: _AttachmentChoice(icon: Icons.videocam_rounded, label: 'Video', color: const Color(0xFFE05B8D), onTap: () => Navigator.pop(sheetContext, 'video'))),
+              const SizedBox(width: 10),
+              Expanded(child: _AttachmentChoice(icon: Icons.camera_alt_rounded, label: 'Kamera', color: const Color(0xFF20C76B), onTap: () => Navigator.pop(sheetContext, 'camera'))),
+              const SizedBox(width: 10),
+              Expanded(child: _AttachmentChoice(icon: Icons.description_rounded, label: 'File', color: const Color(0xFF3EA6FF), onTap: () => Navigator.pop(sheetContext, 'file'))),
+            ]),
+          ]),
+        ),
+      ),
+    );
+    if (choice == 'photo') return _pickPhoto();
+    if (choice == 'video') return _pickVideo();
+    if (choice == 'camera') return _takePhoto();
+    if (choice == 'file') return _pickDocument();
   }
 
   Future<void> _rename() async {
@@ -386,12 +489,96 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   Widget _bubble(Map<String,dynamic> message){final me=(message['senderUsername']??message['sender'])==widget.session.username;final type=message['type']??'text';Widget body;if(type=='image'||type=='video'){final url=(message['url']??message['mediaUrl']??'').toString();body=Column(crossAxisAlignment:CrossAxisAlignment.start,children:[if(url.isNotEmpty)Container(width:230,height:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(10)),child:type=='image'?Image.network(url,fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Center(child:Icon(Icons.broken_image))):Stack(fit:StackFit.expand,children:[Container(color:Colors.black45),const Center(child:Icon(Icons.play_circle_fill,size:54,color:Colors.white))])),Row(mainAxisSize:MainAxisSize.min,children:[Text(type=='video'?'Video':'Foto',style:const TextStyle(fontSize:12)),IconButton(onPressed:url.isEmpty?null:()=>_download(url,type),icon:const Icon(Icons.download,size:18))])]);}else if(type=='file'){final url=(message['url']??message['mediaUrl']??'').toString();final name=(message['fileName']??message['name']??message['message']??'File').toString();body=Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.insert_drive_file_outlined,size:34),const SizedBox(width:9),Flexible(child:Text(name,maxLines:2,overflow:TextOverflow.ellipsis)),if(url.isNotEmpty)IconButton(onPressed:()=>_downloadFilePlaceholder(url),icon:const Icon(Icons.download,size:18))]);}else{body=Text(message['message']?.toString()??'',style:const TextStyle(fontSize:15));}
     final max=MediaQuery.sizeOf(context).width*.82;final status=message['status']?.toString()??'sent';return Align(alignment:me?Alignment.centerRight:Alignment.centerLeft,child:ConstrainedBox(key:ValueKey(message['id']?.toString()),constraints:BoxConstraints(maxWidth:max),child:Container(margin:const EdgeInsets.only(bottom:5),padding:const EdgeInsets.fromLTRB(12,8,8,6),decoration:BoxDecoration(color:me?const Color(0xFF2A6B55):const Color(0xFF20282C),borderRadius:BorderRadius.circular(12)),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.end,children:[Align(alignment:Alignment.centerLeft,widthFactor:1,child:body),Row(mainAxisSize:MainAxisSize.min,children:[Text(_time(message['createdAt']),style:const TextStyle(fontSize:10,color:Colors.white54)),if(me)...[const SizedBox(width:3),_ticks(status)]])]))));}
-  Widget _ticks(String status){IconData i=Icons.check;Color c=Colors.white54;if(status=='failed'){i=Icons.close;c=Colors.redAccent;}else if(status=='read'){i=Icons.done_all;c=const Color(0xFF53BDEB);}else if(status=='sent'||status=='delivered'){i=Icons.done_all;}else if(status=='sending')return const SizedBox(width:15,height:15,child:Padding(padding:EdgeInsets.all(2),child:CircularProgressIndicator(strokeWidth:1.6)));return Icon(i,color:c,size:15);}
+  Widget _ticks(String status) {
+    IconData icon = Icons.check;
+    Color color = Colors.white54;
+
+    if (status == 'failed') {
+      icon = Icons.close;
+      color = Colors.redAccent;
+    } else if (status == 'read') {
+      icon = Icons.done_all;
+      color = const Color(0xFF53BDEB);
+    } else if (status == 'sent' || status == 'delivered') {
+      icon = Icons.done_all;
+    } else if (status == 'sending') {
+      return const SizedBox(
+        width: 15,
+        height: 15,
+        child: Padding(
+          padding: EdgeInsets.all(2),
+          child: CircularProgressIndicator(strokeWidth: 1.6),
+        ),
+      );
+    }
+
+    return Icon(icon, color: color, size: 15);
+  }
   String _time(dynamic v){final d=DateTime.tryParse(v?.toString()??'')?.toLocal();if(d==null)return'';return'${d.hour.toString().padLeft(2,'0')}:${d.minute.toString().padLeft(2,'0')}';}
-  Widget _composer()=>Container(padding:const EdgeInsets.fromLTRB(8,5,8,7),color:const Color(0xFF10171A),child:Row(crossAxisAlignment:CrossAxisAlignment.end,children:[IconButton(padding:const EdgeInsets.all(10),constraints:const BoxConstraints(minWidth:44,minHeight:44),onPressed:sendingMedia?null:sendMedia,icon:const Icon(Icons.attach_file)),Expanded(child:TextField(controller:input,minLines:1,maxLines:5,textInputAction:TextInputAction.newline,decoration:InputDecoration(hintText:'Ketik pesan',filled:true,fillColor:const Color(0xFF20282C),border:OutlineInputBorder(borderRadius:BorderRadius.circular(24),borderSide:BorderSide.none),contentPadding:const EdgeInsets.symmetric(horizontal:16,vertical:11)))),const SizedBox(width:4),ValueListenableBuilder<TextEditingValue>(valueListenable:input,builder:(_,v,__){final has=v.text.trim().isNotEmpty;return CircleAvatar(radius:23,backgroundColor:const Color(0xFF20C76B),child:IconButton(onPressed:has?sendText:sendMedia,icon:Icon(has?Icons.send:Icons.mic),color:Colors.black));})]));
+  Widget _composer() => Container(
+    decoration: const BoxDecoration(
+      color: Color(0xFF10171A),
+      border: Border(top: BorderSide(color: Colors.white10)),
+    ),
+    padding: const EdgeInsets.fromLTRB(8, 8, 8, 10),
+    child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+      IconButton(
+        tooltip: 'Foto',
+        onPressed: sendingMedia ? null : _pickPhoto,
+        icon: const Icon(Icons.photo_rounded),
+      ),
+      Expanded(
+        child: TextField(
+          controller: input,
+          minLines: 1,
+          maxLines: 5,
+          textInputAction: TextInputAction.newline,
+          decoration: InputDecoration(
+            hintText: 'Tulis pesan...',
+            filled: true,
+            fillColor: const Color(0xFF20282C),
+            prefixIcon: IconButton(onPressed: sendingMedia ? null : sendMedia, icon: const Icon(Icons.add_circle_outline)),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(25), borderSide: BorderSide.none),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          ),
+        ),
+      ),
+      const SizedBox(width: 5),
+      ValueListenableBuilder<TextEditingValue>(
+        valueListenable: input,
+        builder: (_, v, __) {
+          final has = v.text.trim().isNotEmpty;
+          return Container(
+            width: 48,
+            height: 48,
+            decoration: const BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: [Color(0xFF7B61FF), Color(0xFF20C76B)])),
+            child: IconButton(onPressed: sendingMedia ? null : (has ? sendText : _takePhoto), icon: Icon(has ? Icons.send_rounded : Icons.camera_alt_rounded, color: Colors.white)),
+          );
+        },
+      ),
+    ]),
+  );
 
   Future<void> _download(String url,String type) async{try{final res=await http.get(Uri.parse(url));if(res.statusCode!=200)throw Exception('HTTP ${res.statusCode}');if(type=='video'){final dir=await getApplicationDocumentsDirectory();final f=File('${dir.path}/ChatWithU_${DateTime.now().millisecondsSinceEpoch}.mp4');await f.writeAsBytes(res.bodyBytes);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Video tersimpan: ${f.path}')));return;}final bytes=Uint8List.fromList(res.bodyBytes);final result=await SaverGallery.saveImage(bytes,fileName:'ChatWithU_${DateTime.now().millisecondsSinceEpoch}.jpg',skipIfExists:false);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(result.isSuccess?'Tersimpan di galeri':'Gagal menyimpan')));}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal mengunduh: $e')));}}
   Future<void> _downloadFilePlaceholder(String url) async{try{final res=await http.get(Uri.parse(url));final dir=await getApplicationDocumentsDirectory();final f=File('${dir.path}/download_${DateTime.now().millisecondsSinceEpoch}');await f.writeAsBytes(res.bodyBytes);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('File tersimpan: ${f.path}')));}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal: $e')));}}
+}
+
+class _AttachmentChoice extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+  const _AttachmentChoice({required this.icon, required this.label, required this.color, required this.onTap});
+  @override
+  Widget build(BuildContext context) => InkWell(
+    borderRadius: BorderRadius.circular(18),
+    onTap: onTap,
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 15),
+      decoration: BoxDecoration(color: color.withValues(alpha: .13), borderRadius: BorderRadius.circular(18), border: Border.all(color: color.withValues(alpha: .25))),
+      child: Column(children: [Icon(icon, color: color, size: 28), const SizedBox(height: 6), Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700))]),
+    ),
+  );
 }
 
 class _TypingText extends StatefulWidget{const _TypingText({super.key});@override State<_TypingText> createState()=>_TypingTextState();}

@@ -60,3 +60,10 @@ The release build uses the ChatWithU Pterodactyl endpoint configured by CHATWITH
 ## GitHub Actions build
 
 The repository is intended to be uploaded with `.github/` and `pubspec.yaml` at the repository root. The workflow uses Flutter 3.47.4 / Dart 3.13.3, Java 17, Gradle 8.14, AGP 8.11.1, and Kotlin 2.2.20.
+
+
+## Media upload
+Composer sekarang punya tombol Foto langsung (gallery), Kamera, Video, dan File. Foto tidak lagi memakai file picker. Foto juga menampilkan preview sebelum dikirim.
+
+## Admin dashboard
+Buka `/admin` pada backend, misalnya `http://HOST:5201/admin`. Login memakai `ADMIN_USERNAME` dan `ADMIN_PASSWORD` dari environment Pterodactyl. Admin dapat mengatur Verified, badges, ban/unban, dan melihat statistik user.
