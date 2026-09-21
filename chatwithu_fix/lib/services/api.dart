@@ -58,7 +58,7 @@ class Api {
   Future<Map<String, dynamic>> uploadAvatar(String token, File file) async {
     final req = http.MultipartRequest('POST', uri('/api/profile/avatar'));
     req.headers['Authorization'] = 'Bearer $token';
-    req.files.add(await http.MultipartFile.fromPath('file', file.path, filename: file.path.split('/').last));
+    req.files.add(await http.MultipartFile.fromPath('file', file.path));
     final res = await req.send();
     final text = await res.stream.bytesToString();
     dynamic data;

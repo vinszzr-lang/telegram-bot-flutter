@@ -41,6 +41,9 @@ class _ProfilePageState extends State<ProfilePage> {
     try {
       final length = await file.length();
       if (length <= 0) throw Exception('Foto tidak dapat dibaca.');
+      final name = picked.name.toLowerCase();
+      final okExt = RegExp(r'\.(jpg|jpeg|png|webp|heic|heif)$').hasMatch(name);
+      if (!okExt) throw Exception('File bukan gambar yang didukung.');
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Foto tidak valid: $e')));
       return;
