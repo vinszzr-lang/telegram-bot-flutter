@@ -104,14 +104,24 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   void _onRead(dynamic raw) {
     if (raw is! Map || raw['username']?.toString() != username) return;
+    final ids = (raw['ids'] is List)
+        ? (raw['ids'] as List).map((e) => e.toString()).where((e) => e.isNotEmpty).toSet()
+        : <String>{};
+    // A read event must identify the exact messages that were opened.
+    // Never mark every outgoing message read just because a generic event arrived.
+    if (ids.isEmpty) return;
     var changed = false;
     for (var i = 0; i < messages.length; i++) {
-      if (messages[i]['senderUsername']?.toString() == widget.session.username && messages[i]['status'] != 'read') {
+      final id = messages[i]['id']?.toString();
+      if (id != null && ids.contains(id) && messages[i]['senderUsername']?.toString() == widget.session.username && messages[i]['status'] != 'read') {
         messages[i] = {...messages[i], 'status': 'read'};
         changed = true;
       }
     }
-    if (changed && mounted) setState(() {});
+    if (changed) {
+      LocalCache.saveMessages(username, messages);
+      if (mounted) setState(() {});
+    }
   }
 
   void _onProfileUpdated(dynamic raw) {
@@ -146,8 +156,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     final latest = messages.isEmpty ? DateTime.now().toUtc() : _newestDate() ?? DateTime.now().toUtc();
     await LocalCache.markRead(username, latest.toUtc().toIso8601String());
     try {
+      // The HTTP endpoint is authoritative and returns/ broadcasts the exact
+      // message IDs that were actually read. Do not emit a generic read event
+      // from the reader, because that can incorrectly turn sent messages blue.
       await api.markRead(token, username);
-      socket.emit('message:read', {'other': username});
     } catch (_) {}
   }
 
@@ -682,7 +694,15 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
               ? (downloaded ? () => _showStickerActions(message) : null)
               : (url.isEmpty ? null : () => downloaded || me ? _openImageViewer(url, message, localPath: downloaded ? localPath : null) : null),
           child: Stack(alignment:Alignment.center,children:[
-            Container(width:sticker?150:230,height:sticker?150:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(sticker?18:10)),child:image),
+            sticker
+                ? Container(width:150,height:150,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(18)),child:image)
+                : ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 300, maxHeight: 360),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: image,
+                    ),
+                  ),
             if(!me&&!downloaded)
               _mediaDownloadButton(message,size),
           ]),
@@ -1087,13 +1107,12 @@ class _VideoBubbleState extends State<_VideoBubble> {
       return Container(width: 230, height: 160, color: Colors.black45, child: const Center(child: CircularProgressIndicator(strokeWidth: 2)));
     }
     final aspect = c.value.aspectRatio > 0 ? c.value.aspectRatio : 16 / 9;
-    return Container(
-      width: 230,
-      constraints: const BoxConstraints(maxHeight: 190),
-      decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(10)),
-      clipBehavior: Clip.antiAlias,
-      child: AspectRatio(
-        aspectRatio: aspect,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 300, maxHeight: 360),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: AspectRatio(
+          aspectRatio: aspect,
         child: Stack(fit: StackFit.expand, children: [
           VideoPlayer(c),
           Container(color: Colors.black26),
@@ -1102,7 +1121,8 @@ class _VideoBubbleState extends State<_VideoBubble> {
             child: Padding(padding: EdgeInsets.all(10), child: Icon(Icons.play_arrow_rounded, color: Colors.black, size: 34)),
           )),
           Positioned(left: 8, right: 8, bottom: 7, child: VideoProgressIndicator(c, allowScrubbing: false, padding: EdgeInsets.zero, colors: const VideoProgressColors(playedColor: Colors.white, bufferedColor: Colors.white54, backgroundColor: Colors.white24))),
-        ]),
+          ]),
+        ),
       ),
     );
   }
