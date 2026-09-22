@@ -10,6 +10,7 @@ import 'package:saver_gallery/saver_gallery.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 import '../services/api.dart';
 import '../services/session.dart';
@@ -46,6 +47,8 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   String? wallpaperPath;
   final Map<String, String> _downloadedMediaPaths = {};
   final Set<String> _downloadingMedia = <String>{};
+  final List<String> _stickers = <String>[];
+  bool _showStickerTray = false;
 
   @override
   void initState() {
@@ -57,6 +60,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     avatarUrl = (widget.contact['avatarUrl'] ?? '').toString();
     verified = widget.contact['verified'] == true;
     input.addListener(_onInputChanged);
+    _loadStickers();
     _connectSocket();
     load();
     pollTimer = Timer.periodic(const Duration(seconds: 8), (_) { if (!socket.connected) syncMessages(); });
@@ -79,6 +83,9 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     if (sender != username && recipient != username) return;
     _mergeMessages([m]);
     LocalCache.saveMessages(username, messages);
+    if (m['type']?.toString() == 'sticker' && m['senderUsername']?.toString() != widget.session.username) {
+      _downloadStickerToCache(m);
+    }
     if (sender == username) remoteTyping = false;
     if (mounted) setState(() {});
     if (sender == username || recipient == widget.session.username) _bottom();
@@ -86,11 +93,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   void _onTyping(dynamic raw) {
     if (raw is! Map) return;
-    final from = raw['from']?.toString();
-    // Typing is always displayed to the other participant only.
-    // Ignore any socket echo/loopback from this device.
-    if (from == null || from.isEmpty || from == widget.session.username) return;
-    if (from != username) return;
+    if (raw['from']?.toString() != username) return;
     final value = raw['typing'] == true;
     if (mounted && remoteTyping != value) setState(() => remoteTyping = value);
   }
@@ -124,6 +127,11 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     if (mounted && local.isNotEmpty) setState(() => messages = local);
     await syncMessages(full: true);
     await _restoreLocalMedia();
+    for (final m in List<Map<String, dynamic>>.from(messages)) {
+      if (m['type']?.toString() == 'sticker' && m['senderUsername']?.toString() != widget.session.username && !_downloadedMediaPaths.containsKey(m['id']?.toString())) {
+        await _downloadStickerToCache(m);
+      }
+    }
     await _markRead();
     _bottom(jump: true);
   }
@@ -286,6 +294,139 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     } finally {
       if (mounted) setState(() => sendingMedia = false);
     }
+  }
+
+  Future<Directory> _stickerDirectory() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final out = Directory('${dir.path}/chatwithu_stickers');
+    await out.create(recursive: true);
+    return out;
+  }
+
+  Future<void> _loadStickers() async {
+    final prefs = await SharedPreferences.getInstance();
+    final key = 'chatwithu_stickers_${widget.session.username}';
+    final values = prefs.getStringList(key) ?? <String>[];
+    final valid = <String>[];
+    for (final p in values) {
+      if (await File(p).exists()) valid.add(p);
+    }
+    if (mounted) setState(() => _stickers..clear()..addAll(valid));
+    if (valid.length != values.length) await prefs.setStringList(key, valid);
+  }
+
+  Future<void> _saveStickerPath(String path) async {
+    final prefs = await SharedPreferences.getInstance();
+    final key = 'chatwithu_stickers_${widget.session.username}';
+    final values = [...(prefs.getStringList(key) ?? <String>[])];
+    if (!values.contains(path)) values.add(path);
+    await prefs.setStringList(key, values);
+    if (mounted) setState(() => _stickers..clear()..addAll(values));
+  }
+
+  Future<ui.Image> _decodeStickerImage(Uint8List bytes) async {
+    final codec = await ui.instantiateImageCodec(bytes, targetWidth: 512, targetHeight: 512);
+    final frame = await codec.getNextFrame();
+    return frame.image;
+  }
+
+  Future<String?> _createStickerPng({String? text, Color background = const Color(0xFF7B61FF), File? photo}) async {
+    try {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      const size = Size(512, 512);
+      final bg = Paint()..color = background;
+      canvas.drawRRect(RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(64)), bg);
+      if (photo != null) {
+        final image = await _decodeStickerImage(await photo.readAsBytes());
+        final src = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
+        final dst = const Rect.fromLTWH(38, 38, 436, 436);
+        canvas.save();
+        canvas.clipRRect(RRect.fromRectAndRadius(dst, const Radius.circular(54)));
+        canvas.drawImageRect(image, src, dst, Paint()..filterQuality = FilterQuality.high);
+        canvas.restore();
+      } else {
+        final painter = TextPainter(
+          text: TextSpan(text: text ?? 'ChatWithU', style: const TextStyle(color: Colors.white, fontSize: 62, fontWeight: FontWeight.w800, height: 1.05)),
+          textAlign: TextAlign.center,
+          textDirection: TextDirection.ltr,
+          maxLines: 4,
+        )..layout(maxWidth: 430);
+        painter.paint(canvas, Offset((512 - painter.width) / 2, (512 - painter.height) / 2));
+      }
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(512, 512);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (bytes == null) return null;
+      final dir = await _stickerDirectory();
+      final file = File('${dir.path}/sticker_${DateTime.now().microsecondsSinceEpoch}.png');
+      await file.writeAsBytes(bytes.buffer.asUint8List(), flush: true);
+      await _saveStickerPath(file.path);
+      return file.path;
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal membuat sticker: $e')));
+      return null;
+    }
+  }
+
+  Future<void> _createSticker() async {
+    final result = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF10171A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(26))),
+      builder: (sheet) => _StickerMakerSheet(picker: picker),
+    );
+    if (result == null) return;
+    final color = result['color'] as Color? ?? const Color(0xFF7B61FF);
+    final photo = result['photo'] as XFile?;
+    final text = (result['text'] ?? '').toString().trim();
+    if (photo == null && text.isEmpty) return;
+    final path = await _createStickerPng(text: text, background: color, photo: photo == null ? null : File(photo.path));
+    if (path != null && mounted) setState(() => _showStickerTray = true);
+  }
+
+  Future<void> _sendSticker(String path) async {
+    try {
+      final file = File(path);
+      if (!await file.exists()) return;
+      setState(() => sendingMedia = true);
+      final result = await api.uploadMedia(widget.session.token!, username, file, type: 'sticker');
+      _mergeMessages([result]);
+      final local = await _localMediaFile(Map<String, dynamic>.from(result));
+      await local.parent.create(recursive: true);
+      await file.copy(local.path);
+      _downloadedMediaPaths[result['id'].toString()] = local.path;
+      await LocalCache.saveMessages(username, messages);
+      if (mounted) setState(() {});
+      _bottom();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal mengirim sticker: $e')));
+    } finally {
+      if (mounted) setState(() => sendingMedia = false);
+    }
+  }
+
+  Future<void> _favoriteIncomingSticker(Map<String, dynamic> message) async {
+    final local = _downloadedMediaPaths[message['id']?.toString()];
+    if (local == null || !await File(local).exists()) return;
+    await _saveStickerPath(local);
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sticker ditambahkan ke favorit')));
+  }
+
+  Future<void> _downloadStickerToCache(Map<String, dynamic> message) async {
+    final id = message['id']?.toString() ?? '';
+    if (id.isEmpty || _downloadedMediaPaths.containsKey(id)) return;
+    try {
+      final res = await api.downloadMedia(widget.session.token!, id);
+      if (res.statusCode != 200) return;
+      final local = await _localMediaFile(message);
+      await local.parent.create(recursive: true);
+      await local.writeAsBytes(res.bodyBytes, flush: true);
+      _downloadedMediaPaths[id] = local.path;
+      await LocalCache.saveMessages(username, messages);
+      if (mounted) setState(() {});
+    } catch (_) {}
   }
 
   Future<bool> _previewImage(File file, String fileName) async {
@@ -524,87 +665,35 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     final me=(message['senderUsername']??message['sender'])==widget.session.username;
     final type=message['type']??'text';
     Widget body;
-    if(type=='image'||type=='video'){
+    if(type=='image'||type=='video'||type=='sticker'){
       final url=(message['url']??message['mediaUrl']??'').toString();
       final id=(message['id']??url).toString();
       final localPath=_downloadedMediaPaths[id];
       final downloaded=localPath!=null && File(localPath).existsSync();
       final size=_formatBytes(message['fileSize'] ?? message['size']);
-      if(type=='image'){
+      if(type=='image'||type=='sticker'){
         final image = downloaded
-            ? Image.file(File(localPath),fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Center(child:Icon(Icons.broken_image)))
+            ? Image.file(File(localPath),fit:BoxFit.contain,errorBuilder:(_,__,___)=>const Center(child:Icon(Icons.broken_image)))
             : ImageFiltered(imageFilter: ui.ImageFilter.blur(sigmaX: 11, sigmaY: 11),child: Image.network((message['previewUrl']??url).toString(),fit:BoxFit.cover,errorBuilder:(_,__,___)=>Container(color:Colors.black54,child:const Center(child:Icon(Icons.image_outlined,color:Colors.white54,size:42)))));
+        final sticker = type=='sticker';
         body=GestureDetector(
-          onTap: url.isEmpty ? null : () => downloaded || me ? _openImageViewer(url, message, localPath: downloaded ? _downloadedMediaPaths[id] : null) : null,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              Container(width:230,height:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(10)),child: downloaded || me ? image : image),
-              if(!me && !downloaded)
-                Material(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(28),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(28),
-                    onTap: _downloadingMedia.contains(id) ? null : () => _downloadMediaToCache(message),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                      child: _downloadingMedia.contains(id)
-                          ? const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white))
-                          : Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.download_rounded,color:Colors.white,size:21),const SizedBox(width:7),Text(size.isEmpty ? 'Download' : size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))]),
-                    ),
-                  ),
-                ),
-            ],
-          ),
+          onLongPress: sticker && !me && downloaded ? () => _favoriteIncomingSticker(message) : null,
+          onTap: sticker ? (downloaded ? () => _showStickerActions(message) : null) : (url.isEmpty ? null : () => downloaded || me ? _openImageViewer(url, message, localPath: downloaded ? localPath : null) : null),
+          child: Stack(alignment:Alignment.center,children:[
+            Container(width: sticker ? 150 : 230,height: sticker ? 150 : 160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(sticker ? 18 : 10)),child:image),
+            if(!me&&!downloaded&&!sticker)
+              _mediaDownloadButton(message,size),
+            if(!me&&!downloaded&&sticker)
+              _mediaDownloadButton(message,size),
+          ]),
         );
       }else{
-        if(downloaded || me) {
-          final videoPath = localPath;
-          if(videoPath != null && videoPath.isNotEmpty && File(videoPath).existsSync()) {
-            body = _VideoBubble(path: videoPath);
-          } else {
-            body=Container(
-              width:230,height:160,
-              clipBehavior:Clip.antiAlias,
-              decoration:BoxDecoration(borderRadius:BorderRadius.circular(10)),
-              child:Stack(fit:StackFit.expand,alignment:Alignment.center,children:[
-                Container(color:Colors.black45),
-                const Center(child:Icon(Icons.play_circle_fill,size:54,color:Colors.white)),
-              ]),
-            );
-          }
-        } else {
-          body=Container(
-            width:230,height:160,
-            clipBehavior:Clip.antiAlias,
-            decoration:BoxDecoration(borderRadius:BorderRadius.circular(10)),
-            child:Stack(fit:StackFit.expand,alignment:Alignment.center,children:[
-              Container(color:Colors.black45),
-              const Center(child:Icon(Icons.videocam_rounded,size:46,color:Colors.white54)),
-              Center(
-                child:Material(
-                  color:Colors.black54,
-                  borderRadius:BorderRadius.circular(28),
-                  child:InkWell(
-                    borderRadius:BorderRadius.circular(28),
-                    onTap:_downloadingMedia.contains(id)?null:()=>_downloadMediaToCache(message),
-                    child:Padding(
-                      padding:const EdgeInsets.symmetric(horizontal:14,vertical:9),
-                      child:_downloadingMedia.contains(id)
-                        ? const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white))
-                        : Row(mainAxisSize:MainAxisSize.min,children:[
-                            const Icon(Icons.download_rounded,color:Colors.white,size:21),
-                            const SizedBox(width:7),
-                            Text(size.isEmpty?'Download':size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700)),
-                          ]),
-                    ),
-                  ),
-                ),
-              ),
-            ]),
-          );
-        }
+        body=GestureDetector(
+          onTap: downloaded ? () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => _VideoViewerPage(path: localPath!, onSave: () => _saveVideoToGallery(localPath!, message)))) : null,
+          child: Container(width:230,height:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(10),color:Colors.black),child: downloaded
+            ? _InlineVideoPreview(path:localPath!)
+            : Stack(fit:StackFit.expand,alignment:Alignment.center,children:[Container(color:Colors.black45),if((message['previewUrl']??'').toString().isNotEmpty) Image.network(message['previewUrl'].toString(),fit:BoxFit.cover,opacity:const AlwaysStoppedAnimation(.35)),const Center(child:Icon(Icons.play_circle_fill,size:54,color:Colors.white)),_mediaDownloadButton(message,size)])),
+        );
       }
     }else if(type=='file'){
       final url=(message['url']??message['mediaUrl']??'').toString();final name=(message['fileName']??message['name']??message['message']??'File').toString();body=Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.insert_drive_file_outlined,size:34),const SizedBox(width:9),Flexible(child:Text(name,maxLines:2,overflow:TextOverflow.ellipsis)),if(url.isNotEmpty)IconButton(onPressed:()=>_downloadFilePlaceholder(url),icon:const Icon(Icons.download,size:18))]);
@@ -612,6 +701,12 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       body=Text(message['message']?.toString()??'',style:const TextStyle(fontSize:15));
     }
     final max=MediaQuery.sizeOf(context).width*.82;final status=message['status']?.toString()??'sent';return Align(alignment:me?Alignment.centerRight:Alignment.centerLeft,child:ConstrainedBox(key:ValueKey(message['id']?.toString()),constraints:BoxConstraints(maxWidth:max),child:Container(margin:const EdgeInsets.only(bottom:5),padding:const EdgeInsets.fromLTRB(12,8,8,6),decoration:BoxDecoration(color:me?const Color(0xFF2A6B55):const Color(0xFF20282C),borderRadius:BorderRadius.circular(12)),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.end,children:[Align(alignment:Alignment.centerLeft,widthFactor:1,child:body),Row(mainAxisSize:MainAxisSize.min,children:[Text(_time(message['createdAt']),style:const TextStyle(fontSize:10,color:Colors.white54)),if(me)...[const SizedBox(width:3),_ticks(status)]])]))));
+  }
+
+  Widget _mediaDownloadButton(Map<String,dynamic> message, String size) { final id=(message['id']??'').toString(); return Material(color:Colors.black54,borderRadius:BorderRadius.circular(28),child:InkWell(borderRadius:BorderRadius.circular(28),onTap:_downloadingMedia.contains(id)?null:()=>_downloadMediaToCache(message),child:Padding(padding:const EdgeInsets.symmetric(horizontal:14,vertical:9),child:_downloadingMedia.contains(id)?const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white)):Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.download_rounded,color:Colors.white,size:21),const SizedBox(width:7),Text(size.isEmpty?'Download':size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))])))); }
+
+  Future<void> _showStickerActions(Map<String,dynamic> message) async {
+    await showModalBottomSheet(context:context,backgroundColor:const Color(0xFF10171A),builder:(c)=>SafeArea(child:Wrap(children:[ListTile(leading:const Icon(Icons.star_border),title:const Text('Tambah Ke Favorit'),onTap:()async{Navigator.pop(c);await _favoriteIncomingSticker(message);}),ListTile(leading:const Icon(Icons.send),title:const Text('Kirim ulang'),onTap:()async{Navigator.pop(c);final p=_downloadedMediaPaths[message['id']?.toString()];if(p!=null)await _sendSticker(p);})])));
   }
 
   Widget _ticks(String status) {
@@ -640,49 +735,22 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     return Icon(icon, color: color, size: 15);
   }
   String _time(dynamic v){final d=DateTime.tryParse(v?.toString()??'')?.toLocal();if(d==null)return'';return'${d.hour.toString().padLeft(2,'0')}:${d.minute.toString().padLeft(2,'0')}';}
-  Widget _composer() => Container(
-    decoration: const BoxDecoration(
-      color: Color(0xFF10171A),
-      border: Border(top: BorderSide(color: Colors.white10)),
-    ),
-    padding: const EdgeInsets.fromLTRB(8, 8, 8, 10),
-    child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-      IconButton(
-        tooltip: 'Foto',
-        onPressed: sendingMedia ? null : _pickPhoto,
-        icon: const Icon(Icons.photo_rounded),
-      ),
-      Expanded(
-        child: TextField(
-          controller: input,
-          minLines: 1,
-          maxLines: 5,
-          textInputAction: TextInputAction.newline,
-          decoration: InputDecoration(
-            hintText: 'Tulis pesan...',
-            filled: true,
-            fillColor: const Color(0xFF20282C),
-            prefixIcon: IconButton(onPressed: sendingMedia ? null : sendMedia, icon: const Icon(Icons.add_circle_outline)),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(25), borderSide: BorderSide.none),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-          ),
-        ),
-      ),
-      const SizedBox(width: 5),
-      ValueListenableBuilder<TextEditingValue>(
-        valueListenable: input,
-        builder: (_, v, __) {
-          final has = v.text.trim().isNotEmpty;
-          return Container(
-            width: 48,
-            height: 48,
-            decoration: const BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: [Color(0xFF7B61FF), Color(0xFF20C76B)])),
-            child: IconButton(onPressed: sendingMedia ? null : (has ? sendText : _takePhoto), icon: Icon(has ? Icons.send_rounded : Icons.camera_alt_rounded, color: Colors.white)),
-          );
-        },
-      ),
-    ]),
-  );
+  Widget _composer() => Column(mainAxisSize:MainAxisSize.min,children:[
+    if(_showStickerTray) _stickerTray(),
+    Container(decoration:const BoxDecoration(color:Color(0xFF10171A),border:Border(top:BorderSide(color:Colors.white10))),padding:const EdgeInsets.fromLTRB(8,8,8,10),child:Row(crossAxisAlignment:CrossAxisAlignment.end,children:[
+      IconButton(tooltip:'Sticker',onPressed:sendingMedia?null:()async{if(_stickers.isEmpty){await _createSticker();if(mounted&&_stickers.isNotEmpty)setState(()=>_showStickerTray=true);return;}if(mounted)setState(()=>_showStickerTray=!_showStickerTray);},icon:const Icon(Icons.sticky_note_2_outlined)),
+      Expanded(child:TextField(controller:input,minLines:1,maxLines:5,textInputAction:TextInputAction.newline,decoration:InputDecoration(hintText:'Tulis pesan...',filled:true,fillColor:const Color(0xFF20282C),prefixIcon:IconButton(onPressed:sendingMedia?null:sendMedia,icon:const Icon(Icons.add_circle_outline)),border:OutlineInputBorder(borderRadius:BorderRadius.circular(25),borderSide:BorderSide.none),contentPadding:const EdgeInsets.symmetric(horizontal:14,vertical:11)))),
+      const SizedBox(width:5),
+      ValueListenableBuilder<TextEditingValue>(valueListenable:input,builder:(_,v,__){final has=v.text.trim().isNotEmpty;return Container(width:48,height:48,decoration:const BoxDecoration(shape:BoxShape.circle,gradient:LinearGradient(colors:[Color(0xFF7B61FF),Color(0xFF20C76B)])),child:IconButton(onPressed:sendingMedia?null:(has?sendText:_takePhoto),icon:Icon(has?Icons.send_rounded:Icons.camera_alt_rounded,color:Colors.white)));}),
+    ])),
+  ]);
+
+  Widget _stickerTray(){
+    return Container(height:154,color:const Color(0xFF151C20),padding:const EdgeInsets.symmetric(vertical:10),child:Row(children:[
+      IconButton(tooltip:'Buat Sticker Anda',onPressed:_createSticker,icon:const Icon(Icons.add_circle_outline)),
+      Expanded(child:_stickers.isEmpty?const Center(child:Text('Buat Sticker Anda')):ListView.separated(scrollDirection:Axis.horizontal,padding:const EdgeInsets.symmetric(horizontal:8),itemCount:_stickers.length,itemBuilder:(_,i){final p=_stickers[i];return GestureDetector(onTap:()=>_sendSticker(p),child:Container(width:112,height:112,padding:const EdgeInsets.all(8),decoration:BoxDecoration(color:const Color(0xFF20282C),borderRadius:BorderRadius.circular(16)),child:Image.file(File(p),fit:BoxFit.contain,errorBuilder:(_,__,___)=>const Icon(Icons.broken_image))));},separatorBuilder:(_,__)=>const SizedBox(width:10))),
+    ]));
+  }
 
   String _formatBytes(dynamic raw){
     final n=int.tryParse(raw?.toString()??'')??0;
@@ -696,7 +764,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     final name=(message['fileName']??'').toString().toLowerCase();
     final match=RegExp(r'\.([a-z0-9]{2,5})$').firstMatch(name);
     if(match!=null)return match.group(1)!;
-    return message['type']=='video'?'mp4':'jpg';
+    return message['type']=='video'?'mp4':'png';
   }
 
   Future<File> _localMediaFile(Map<String,dynamic> message) async {
@@ -709,7 +777,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Future<void> _restoreLocalMedia() async {
     final restored=<String,String>{};
     for(final m in messages){
-      if(m['type']!='image'&&m['type']!='video')continue;
+      if(m['type']!='image'&&m['type']!='video'&&m['type']!='sticker')continue;
       final id=m['id']?.toString();
       if(id==null||id.isEmpty)continue;
       final f=await _localMediaFile(m);
@@ -764,16 +832,15 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     }
     if(path==null||path.isEmpty||!File(path).existsSync())return;
     if(!mounted)return;
-    final resolvedPath = path;
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => _ImageViewerPage(
-          path: resolvedPath,
-          message: message,
-          onSave: () => _saveImageToGallery(resolvedPath, message),
-        ),
-      ),
-    );
+    await Navigator.of(context).push(MaterialPageRoute(builder:(_)=>_ImageViewerPage(path:path!,message:message,onSave:()=>_saveImageToGallery(path!,message))));
+  }
+
+  Future<void> _saveVideoToGallery(String path, Map<String,dynamic> message) async{
+    try{
+      final name=(message['fileName']??'ChatWithU_${DateTime.now().millisecondsSinceEpoch}.mp4').toString();
+      final result=await SaverGallery.saveFile(filePath:path,fileName:name,skipIfExists:false);
+      if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(result.isSuccess?'Tersimpan di galeri':'Gagal menyimpan')));
+    }catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal menyimpan: $e')));}
   }
 
   Future<void> _saveImageToGallery(String path, Map<String,dynamic> message) async{
@@ -788,125 +855,6 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   Future<void> _downloadFilePlaceholder(String url) async{try{final res=await http.get(Uri.parse(url));final dir=await getApplicationDocumentsDirectory();final f=File('${dir.path}/download_${DateTime.now().millisecondsSinceEpoch}');await f.writeAsBytes(res.bodyBytes);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('File tersimpan: ${f.path}')));}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal: $e')));}}
-}
-
-
-class _VideoBubble extends StatefulWidget {
-  final String path;
-  const _VideoBubble({required this.path});
-
-  @override
-  State<_VideoBubble> createState() => _VideoBubbleState();
-}
-
-class _VideoBubbleState extends State<_VideoBubble> {
-  VideoPlayerController? _controller;
-  bool _ready = false;
-  bool _failed = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _init();
-  }
-
-  Future<void> _init() async {
-    try {
-      final controller = VideoPlayerController.file(File(widget.path));
-      _controller = controller;
-      await controller.initialize();
-      if (!mounted) {
-        await controller.dispose();
-        return;
-      }
-      setState(() => _ready = true);
-    } catch (_) {
-      if (mounted) setState(() => _failed = true);
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller?.dispose();
-    super.dispose();
-  }
-
-  void _toggle() {
-    final c = _controller;
-    if (c == null || !_ready) return;
-    if (c.value.isPlaying) {
-      c.pause();
-    } else {
-      if (c.value.position >= c.value.duration) {
-        c.seekTo(Duration.zero);
-      }
-      c.play();
-    }
-    setState(() {});
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final c = _controller;
-    return GestureDetector(
-      onTap: _toggle,
-      child: Container(
-        width: 230,
-        height: 160,
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), color: Colors.black),
-        child: !_ready || c == null
-            ? Center(
-                child: _failed
-                    ? const Icon(Icons.error_outline, color: Colors.white54, size: 40)
-                    : const CircularProgressIndicator(strokeWidth: 2.2, color: Colors.white),
-              )
-            : Stack(
-                fit: StackFit.expand,
-                children: [
-                  FittedBox(
-                    fit: BoxFit.cover,
-                    child: SizedBox(
-                      width: c.value.size.width,
-                      height: c.value.size.height,
-                      child: VideoPlayer(c),
-                    ),
-                  ),
-                  Center(
-                    child: AnimatedOpacity(
-                      opacity: c.value.isPlaying ? 0.0 : 1.0,
-                      duration: const Duration(milliseconds: 160),
-                      child: Container(
-                        width: 54,
-                        height: 54,
-                        decoration: const BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.play_arrow_rounded, color: Colors.black, size: 34),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    left: 8,
-                    right: 8,
-                    bottom: 7,
-                    child: VideoProgressIndicator(
-                      c,
-                      allowScrubbing: true,
-                      padding: EdgeInsets.zero,
-                      colors: const VideoProgressColors(
-                        playedColor: Colors.white,
-                        bufferedColor: Colors.white54,
-                        backgroundColor: Colors.white24,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-      ),
-    );
-  }
 }
 
 class _ImageViewerPage extends StatelessWidget{
@@ -942,3 +890,135 @@ class _ChatSearchDelegate extends SearchDelegate<String>{final Api api;final Str
 
 class ChatMediaPage extends StatefulWidget{final Session session;final String username;final String contactName;const ChatMediaPage({super.key,required this.session,required this.username,required this.contactName});@override State<ChatMediaPage> createState()=>_ChatMediaPageState();}
 class _ChatMediaPageState extends State<ChatMediaPage>{final api=Api();Map<String,dynamic> data={'media':[],'docs':[],'links':[]};bool loading=true;@override void initState(){super.initState();_load();}Future<void> _load()async{try{final d=await api.chatMedia(widget.session.token!,widget.username);if(mounted)setState(()=>data=d);}catch(_){}finally{if(mounted)setState(()=>loading=false);}}@override Widget build(BuildContext context)=>DefaultTabController(length:3,child:Scaffold(appBar:AppBar(title:Text(widget.contactName),bottom:const TabBar(tabs:[Tab(text:'Media'),Tab(text:'Dok'),Tab(text:'Tautan')])),body:loading?const Center(child:CircularProgressIndicator()):TabBarView(children:[_media(),_docs(),_links()])));Widget _empty(String text)=>Center(child:Text(text,style:const TextStyle(color:Colors.white54)));Widget _media(){final list=List<dynamic>.from(data['media']??[]);if(list.isEmpty)return _empty('Tidak ada media');return GridView.builder(padding:const EdgeInsets.all(2),gridDelegate:const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount:3,crossAxisSpacing:2,mainAxisSpacing:2),itemCount:list.length,itemBuilder:(_,i){final m=Map<String,dynamic>.from(list[i]);final type=m['type'];final url=(m['url']??m['mediaUrl']??'').toString();return Stack(fit:StackFit.expand,children:[if(type=='image')Image.network((m['previewUrl']??url).toString(),fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Icon(Icons.broken_image))else Container(color:Colors.black38,child:const Icon(Icons.play_circle_fill,size:42)),if(type=='video')const Positioned(right:5,bottom:5,child:Icon(Icons.videocam,size:16))]);});}Widget _docs(){final list=List<dynamic>.from(data['docs']??[]);if(list.isEmpty)return _empty('Tidak ada dokumen');return ListView.builder(itemCount:list.length,itemBuilder:(_,i){final m=Map<String,dynamic>.from(list[i]);return ListTile(leading:const Icon(Icons.insert_drive_file),title:Text(m['fileName']?.toString()??'Dokumen'),subtitle:Text(m['createdAt']?.toString()??''));});}Widget _links(){final list=List<dynamic>.from(data['links']??[]);if(list.isEmpty)return _empty('Tidak ada tautan');return ListView.builder(itemCount:list.length,itemBuilder:(_,i){final m=Map<String,dynamic>.from(list[i]);return ListTile(leading:const Icon(Icons.link),title:Text(m['message']?.toString()??''),subtitle:Text(m['createdAt']?.toString()??''));});}}
+
+class _StickerMakerSheet extends StatefulWidget {
+  final ImagePicker picker;
+  const _StickerMakerSheet({required this.picker});
+  @override
+  State<_StickerMakerSheet> createState() => _StickerMakerSheetState();
+}
+
+class _StickerMakerSheetState extends State<_StickerMakerSheet> {
+  final text = TextEditingController();
+  Color color = const Color(0xFF7B61FF);
+  XFile? photo;
+  final colors = const [
+    Color(0xFF7B61FF), Color(0xFF20C76B), Color(0xFFE05B8D),
+    Color(0xFF3EA6FF), Color(0xFFFF8A3D), Color(0xFFB36BFF),
+    Color(0xFF00A6A6), Color(0xFFE6B800),
+  ];
+
+  @override
+  void dispose() { text.dispose(); super.dispose(); }
+
+  Future<void> pickPhoto() async {
+    final p = await widget.picker.pickImage(source: ImageSource.gallery, imageQuality: 92, maxWidth: 1800, maxHeight: 1800);
+    if (p != null && mounted) setState(() => photo = p);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(child: Padding(
+      padding: EdgeInsets.fromLTRB(16, 12, 16, 16 + MediaQuery.viewInsetsOf(context).bottom),
+      child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Center(child: Container(width: 42, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(10)))),
+        const SizedBox(height: 14),
+        const Text('Buat Sticker Anda', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 14),
+        Container(height: 180, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(22)), child: photo == null
+          ? Center(child: Text(text.text.isEmpty ? 'Sticker' : text.text, textAlign: TextAlign.center, maxLines: 4, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Colors.white)))
+          : ClipRRect(borderRadius: BorderRadius.circular(22), child: Image.file(File(photo!.path), fit: BoxFit.contain))),
+        const SizedBox(height: 14),
+        TextField(controller: text, maxLines: 3, onChanged: (_) => setState(() {}), decoration: const InputDecoration(labelText: 'Teks sticker', hintText: 'Ketik teks yang mau dijadikan sticker', border: OutlineInputBorder())),
+        const SizedBox(height: 12),
+        const Text('Warna background', style: TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 8),
+        Wrap(spacing: 10, runSpacing: 10, children: [for (final c in colors) GestureDetector(onTap: () => setState(() => color = c), child: Container(width: 38, height: 38, decoration: BoxDecoration(color: c, shape: BoxShape.circle, border: Border.all(color: color == c ? Colors.white : Colors.white24, width: color == c ? 3 : 1))))]),
+        const SizedBox(height: 14),
+        OutlinedButton.icon(onPressed: pickPhoto, icon: const Icon(Icons.photo_library_outlined), label: Text(photo == null ? 'Pakai Foto Jadi Sticker' : 'Ganti Foto')),
+        const SizedBox(height: 10),
+        FilledButton.icon(onPressed: (photo == null && text.text.trim().isEmpty) ? null : () => Navigator.pop(context, {'text': text.text.trim(), 'color': color, 'photo': photo}), icon: const Icon(Icons.check_circle_outline), label: const Text('Simpan Sticker')),
+      ])),
+    ));
+  }
+}
+
+class _InlineVideoPreview extends StatefulWidget {
+  final String path;
+  const _InlineVideoPreview({required this.path});
+  @override
+  State<_InlineVideoPreview> createState() => _InlineVideoPreviewState();
+}
+
+class _InlineVideoPreviewState extends State<_InlineVideoPreview> {
+  late final VideoPlayerController controller;
+  @override
+  void initState() { super.initState(); controller = VideoPlayerController.file(File(widget.path))..initialize().then((_) { if (mounted) setState(() {}); }); }
+  @override
+  void dispose() { controller.dispose(); super.dispose(); }
+  @override
+  Widget build(BuildContext context) {
+    if (!controller.value.isInitialized) return const Center(child: CircularProgressIndicator());
+    return Stack(alignment: Alignment.center, children: [
+      Center(child: AspectRatio(aspectRatio: controller.value.aspectRatio == 0 ? 16/9 : controller.value.aspectRatio, child: VideoPlayer(controller))),
+      ValueListenableBuilder<VideoPlayerValue>(valueListenable: controller, builder: (_, value, __) => IconButton(iconSize: 58, color: Colors.white, onPressed: () => value.isPlaying ? controller.pause() : controller.play(), icon: Icon(value.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill))),
+    ]);
+  }
+}
+
+class _VideoViewerPage extends StatefulWidget {
+  final String path;
+  final VoidCallback onSave;
+  const _VideoViewerPage({required this.path, required this.onSave});
+  @override
+  State<_VideoViewerPage> createState() => _VideoViewerPageState();
+}
+
+class _VideoViewerPageState extends State<_VideoViewerPage> {
+  late final VideoPlayerController controller;
+  @override
+  void initState() { super.initState(); controller = VideoPlayerController.file(File(widget.path))..initialize().then((_) { if (mounted) setState(() {}); }); }
+  @override
+  void dispose() { controller.dispose(); super.dispose(); }
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: Colors.black,
+    appBar: AppBar(
+      backgroundColor: Colors.black,
+      title: const SizedBox.shrink(),
+      actions: [IconButton(tooltip: 'Simpan ke galeri', onPressed: widget.onSave, icon: const Icon(Icons.download_rounded))],
+    ),
+    body: Center(
+      child: controller.value.isInitialized
+          ? GestureDetector(
+              onTap: () => controller.value.isPlaying ? controller.pause() : controller.play(),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  AspectRatio(
+                    aspectRatio: controller.value.aspectRatio == 0 ? 16 / 9 : controller.value.aspectRatio,
+                    child: VideoPlayer(controller),
+                  ),
+                  ValueListenableBuilder<VideoPlayerValue>(
+                    valueListenable: controller,
+                    builder: (_, value, __) => AnimatedOpacity(
+                      duration: const Duration(milliseconds: 120),
+                      opacity: value.isPlaying ? 0.0 : 1.0,
+                      child: const Icon(Icons.play_circle_fill, size: 74, color: Colors.white),
+                    ),
+                  ),
+                  Positioned(
+                    left: 12, right: 12, bottom: 12,
+                    child: VideoProgressIndicator(
+                      controller,
+                      allowScrubbing: true,
+                      colors: const VideoProgressColors(playedColor: Colors.white, bufferedColor: Colors.white38, backgroundColor: Colors.white12),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          : const CircularProgressIndicator(),
+    ),
+  );
+}
