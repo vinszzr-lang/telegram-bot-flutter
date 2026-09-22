@@ -102,6 +102,11 @@ class Api {
   Future<Map<String, dynamic>> sendMessage(String token, String username, String message) async =>
       Map<String, dynamic>.from(await request('POST', '/api/chats/${Uri.encodeComponent(username)}/messages', token: token, body: {'type': 'text', 'message': message}));
 
+  Future<http.Response> downloadMedia(String token, String messageId) async {
+    final u = uri('/api/media/${Uri.encodeComponent(messageId)}/download');
+    return http.get(u, headers: {'Authorization': 'Bearer $token'});
+  }
+
   Future<Map<String, dynamic>> uploadMedia(String token, String username, File file, {String type = 'video'}) async {
     final req = http.MultipartRequest('POST', uri('/api/chats/${Uri.encodeComponent(username)}/media'));
     req.headers['Authorization'] = 'Bearer $token';

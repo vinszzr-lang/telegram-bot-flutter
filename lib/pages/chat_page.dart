@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:saver_gallery/saver_gallery.dart';
@@ -41,6 +43,8 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   List<Map<String, dynamic>> messages = [];
   String? lastCursor;
   String? wallpaperPath;
+  final Map<String, String> _downloadedMediaPaths = {};
+  final Set<String> _downloadingMedia = <String>{};
 
   @override
   void initState() {
@@ -114,6 +118,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     final local = await LocalCache.messages(username);
     if (mounted && local.isNotEmpty) setState(() => messages = local);
     await syncMessages(full: true);
+    await _restoreLocalMedia();
     await _markRead();
     _bottom(jump: true);
   }
@@ -256,6 +261,12 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       setState(() => sendingMedia = true);
       final result = await api.uploadMedia(widget.session.token!, username, file, type: type);
       _mergeMessages([result]);
+      // Keep the sender's own copy on-device. The server copy is only a relay
+      // and may be deleted as soon as the recipient successfully downloads it.
+      final local = await _localMediaFile(Map<String,dynamic>.from(result));
+      await local.parent.create(recursive: true);
+      await file.copy(local.path);
+      _downloadedMediaPaths[result['id'].toString()] = local.path;
       await LocalCache.saveMessages(username, messages);
       if (mounted) setState(() {});
       _bottom();
@@ -504,8 +515,60 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   String _dayKey(dynamic v){final d=DateTime.tryParse(v?.toString()??'')?.toLocal();return d==null?'':'${d.year}-${d.month}-${d.day}';}
   String _dayLabel(dynamic v){final d=DateTime.tryParse(v?.toString()??'')?.toLocal();if(d==null)return'';final n=DateTime.now();final diff=DateTime(n.year,n.month,n.day).difference(DateTime(d.year,d.month,d.day)).inDays;if(diff==0)return'Hari Ini';if(diff==1)return'Kemarin';const m=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];return'${d.day} ${m[d.month-1]} ${d.year}';}
 
-  Widget _bubble(Map<String,dynamic> message){final me=(message['senderUsername']??message['sender'])==widget.session.username;final type=message['type']??'text';Widget body;if(type=='image'||type=='video'){final url=(message['url']??message['mediaUrl']??'').toString();body=Column(crossAxisAlignment:CrossAxisAlignment.start,children:[if(url.isNotEmpty)Container(width:230,height:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(10)),child:type=='image'?Image.network(url,fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Center(child:Icon(Icons.broken_image))):Stack(fit:StackFit.expand,children:[Container(color:Colors.black45),const Center(child:Icon(Icons.play_circle_fill,size:54,color:Colors.white))])),Row(mainAxisSize:MainAxisSize.min,children:[Text(type=='video'?'Video':'Foto',style:const TextStyle(fontSize:12)),IconButton(onPressed:url.isEmpty?null:()=>_download(url,type),icon:const Icon(Icons.download,size:18))])]);}else if(type=='file'){final url=(message['url']??message['mediaUrl']??'').toString();final name=(message['fileName']??message['name']??message['message']??'File').toString();body=Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.insert_drive_file_outlined,size:34),const SizedBox(width:9),Flexible(child:Text(name,maxLines:2,overflow:TextOverflow.ellipsis)),if(url.isNotEmpty)IconButton(onPressed:()=>_downloadFilePlaceholder(url),icon:const Icon(Icons.download,size:18))]);}else{body=Text(message['message']?.toString()??'',style:const TextStyle(fontSize:15));}
-    final max=MediaQuery.sizeOf(context).width*.82;final status=message['status']?.toString()??'sent';return Align(alignment:me?Alignment.centerRight:Alignment.centerLeft,child:ConstrainedBox(key:ValueKey(message['id']?.toString()),constraints:BoxConstraints(maxWidth:max),child:Container(margin:const EdgeInsets.only(bottom:5),padding:const EdgeInsets.fromLTRB(12,8,8,6),decoration:BoxDecoration(color:me?const Color(0xFF2A6B55):const Color(0xFF20282C),borderRadius:BorderRadius.circular(12)),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.end,children:[Align(alignment:Alignment.centerLeft,widthFactor:1,child:body),Row(mainAxisSize:MainAxisSize.min,children:[Text(_time(message['createdAt']),style:const TextStyle(fontSize:10,color:Colors.white54)),if(me)...[const SizedBox(width:3),_ticks(status)]])]))));}
+  Widget _bubble(Map<String,dynamic> message){
+    final me=(message['senderUsername']??message['sender'])==widget.session.username;
+    final type=message['type']??'text';
+    Widget body;
+    if(type=='image'||type=='video'){
+      final url=(message['url']??message['mediaUrl']??'').toString();
+      final id=(message['id']??url).toString();
+      final localPath=_downloadedMediaPaths[id];
+      final downloaded=localPath!=null && File(localPath).existsSync();
+      final size=_formatBytes(message['fileSize'] ?? message['size']);
+      if(type=='image'){
+        final image = downloaded
+            ? Image.file(File(localPath!),fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Center(child:Icon(Icons.broken_image)))
+            : ImageFiltered(imageFilter: ui.ImageFilter.blur(sigmaX: 11, sigmaY: 11),child: Image.network((message['previewUrl']??url).toString(),fit:BoxFit.cover,errorBuilder:(_,__,___)=>Container(color:Colors.black54,child:const Center(child:Icon(Icons.image_outlined,color:Colors.white54,size:42)))));
+        body=GestureDetector(
+          onTap: url.isEmpty ? null : () => downloaded || me ? _openImageViewer(url, message, localPath: downloaded ? _downloadedMediaPaths[id] : null) : null,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Container(width:230,height:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(10)),child: downloaded || me ? image : image),
+              if(!me && !downloaded)
+                Material(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(28),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(28),
+                    onTap: _downloadingMedia.contains(id) ? null : () => _downloadMediaToCache(message),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                      child: _downloadingMedia.contains(id)
+                          ? const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white))
+                          : Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.download_rounded,color:Colors.white,size:21),const SizedBox(width:7),Text(size.isEmpty ? 'Download' : size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))]),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      }else{
+        body=Container(width:230,height:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(10)),child:Stack(fit:StackFit.expand,alignment:Alignment.center,children:[
+          Container(color:Colors.black45),
+          const Center(child:Icon(Icons.play_circle_fill,size:54,color:Colors.white)),
+          if(!me&&!downloaded)
+            Center(child:Material(color:Colors.black54,borderRadius:BorderRadius.circular(28),child:InkWell(borderRadius:BorderRadius.circular(28),onTap:_downloadingMedia.contains(id)?null:()=>_downloadMediaToCache(message),child:Padding(padding:const EdgeInsets.symmetric(horizontal:14,vertical:9),child:_downloadingMedia.contains(id)?const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white)):Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.download_rounded,color:Colors.white,size:21),const SizedBox(width:7),Text(size.isEmpty?'Download':size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))])))))
+        ]));
+      }
+    }else if(type=='file'){
+      final url=(message['url']??message['mediaUrl']??'').toString();final name=(message['fileName']??message['name']??message['message']??'File').toString();body=Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.insert_drive_file_outlined,size:34),const SizedBox(width:9),Flexible(child:Text(name,maxLines:2,overflow:TextOverflow.ellipsis)),if(url.isNotEmpty)IconButton(onPressed:()=>_downloadFilePlaceholder(url),icon:const Icon(Icons.download,size:18))]);
+    }else{
+      body=Text(message['message']?.toString()??'',style:const TextStyle(fontSize:15));
+    }
+    final max=MediaQuery.sizeOf(context).width*.82;final status=message['status']?.toString()??'sent';return Align(alignment:me?Alignment.centerRight:Alignment.centerLeft,child:ConstrainedBox(key:ValueKey(message['id']?.toString()),constraints:BoxConstraints(maxWidth:max),child:Container(margin:const EdgeInsets.only(bottom:5),padding:const EdgeInsets.fromLTRB(12,8,8,6),decoration:BoxDecoration(color:me?const Color(0xFF2A6B55):const Color(0xFF20282C),borderRadius:BorderRadius.circular(12)),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.end,children:[Align(alignment:Alignment.centerLeft,widthFactor:1,child:body),Row(mainAxisSize:MainAxisSize.min,children:[Text(_time(message['createdAt']),style:const TextStyle(fontSize:10,color:Colors.white54)),if(me)...[const SizedBox(width:3),_ticks(status)]])]))));
+  }
+
   Widget _ticks(String status) {
     IconData icon = Icons.check;
     Color color = Colors.white54;
@@ -576,8 +639,109 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     ]),
   );
 
-  Future<void> _download(String url,String type) async{try{final res=await http.get(Uri.parse(url));if(res.statusCode!=200)throw Exception('HTTP ${res.statusCode}');if(type=='video'){final dir=await getApplicationDocumentsDirectory();final f=File('${dir.path}/ChatWithU_${DateTime.now().millisecondsSinceEpoch}.mp4');await f.writeAsBytes(res.bodyBytes);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Video tersimpan: ${f.path}')));return;}final bytes=Uint8List.fromList(res.bodyBytes);final result=await SaverGallery.saveImage(bytes,fileName:'ChatWithU_${DateTime.now().millisecondsSinceEpoch}.jpg',skipIfExists:false);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(result.isSuccess?'Tersimpan di galeri':'Gagal menyimpan')));}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal mengunduh: $e')));}}
+  String _formatBytes(dynamic raw){
+    final n=int.tryParse(raw?.toString()??'')??0;
+    if(n<=0)return'';
+    if(n<1024)return '$n B';
+    if(n<1024*1024)return '${(n/1024).toStringAsFixed(n<10*1024?1:0)} KB';
+    return '${(n/(1024*1024)).toStringAsFixed(n<10*1024*1024?1:0)} MB';
+  }
+
+  String _mediaExt(Map<String,dynamic> message) {
+    final name=(message['fileName']??'').toString().toLowerCase();
+    final match=RegExp(r'\.([a-z0-9]{2,5})$').firstMatch(name);
+    if(match!=null)return match.group(1)!;
+    return message['type']=='video'?'mp4':'jpg';
+  }
+
+  Future<File> _localMediaFile(Map<String,dynamic> message) async {
+    final dir=await getApplicationDocumentsDirectory();
+    final mediaDir=Directory('${dir.path}/chatwithu_media');
+    final safe=base64Url.encode(utf8.encode((message['id']??'').toString())).replaceAll('=','');
+    return File('${mediaDir.path}/$safe.${_mediaExt(message)}');
+  }
+
+  Future<void> _restoreLocalMedia() async {
+    final restored=<String,String>{};
+    for(final m in messages){
+      if(m['type']!='image'&&m['type']!='video')continue;
+      final id=m['id']?.toString();
+      if(id==null||id.isEmpty)continue;
+      final f=await _localMediaFile(m);
+      if(await f.exists())restored[id]=f.path;
+    }
+    if(restored.isNotEmpty&&mounted)setState(()=>_downloadedMediaPaths.addAll(restored));
+  }
+
+  Future<void> _downloadMediaToCache(Map<String,dynamic> message) async {
+    final id=(message['id']??'').toString();
+    if(id.isEmpty||widget.session.token==null)return;
+    if(mounted)setState(()=>_downloadingMedia.add(id));
+    try{
+      final res=await api.downloadMedia(widget.session.token!,id);
+      if(res.statusCode!=200) {
+        dynamic data; try{data=jsonDecode(res.body);}catch(_){data=null;}
+        throw Exception(data is Map?(data['message']??'HTTP ${res.statusCode}').toString():'HTTP ${res.statusCode}');
+      }
+      final local=await _localMediaFile(message);
+      await local.parent.create(recursive:true);
+      await local.writeAsBytes(res.bodyBytes,flush:true);
+      _downloadedMediaPaths[id]=local.path;
+
+      // The recipient's first successful fetch also saves the media directly
+      // into the device gallery. The server has already removed its relay copy
+      // after completing this download.
+      final name=(message['fileName']??'ChatWithU_${DateTime.now().millisecondsSinceEpoch}.${_mediaExt(message)}').toString();
+      SaveResult saveResult;
+      if(message['type']=='video'){
+        saveResult=await SaverGallery.saveFile(filePath:local.path,fileName:name,skipIfExists:false);
+      }else{
+        saveResult=await SaverGallery.saveImage(Uint8List.fromList(res.bodyBytes),fileName:name,skipIfExists:false);
+      }
+      if(mounted){
+        setState((){});
+        final ok=saveResult.isSuccess;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(ok?'Berhasil diunduh & disimpan ke galeri':'Berhasil diunduh, tapi gagal menyimpan ke galeri')));
+      }
+    }catch(e){
+      if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal mengunduh: $e')));
+    }finally{
+      if(mounted)setState(()=>_downloadingMedia.remove(id));
+    }
+  }
+
+  Future<void> _openImageViewer(String url, Map<String,dynamic> message, {String? localPath}) async{
+    final id=(message['id']??url).toString();
+    String? path=localPath??_downloadedMediaPaths[id];
+    if(path==null||path.isEmpty||!File(path).existsSync()){
+      final local=await _localMediaFile(message);
+      if(await local.exists())path=local.path;
+    }
+    if(path==null||path.isEmpty||!File(path).existsSync())return;
+    if(!mounted)return;
+    await Navigator.of(context).push(MaterialPageRoute(builder:(_)=>_ImageViewerPage(path:path!,message:message,onSave:()=>_saveImageToGallery(path!,message))));
+  }
+
+  Future<void> _saveImageToGallery(String path, Map<String,dynamic> message) async{
+    try{
+      final bytes=await File(path).readAsBytes();
+      final name=(message['fileName']??'ChatWithU_${DateTime.now().millisecondsSinceEpoch}.jpg').toString();
+      final result=await SaverGallery.saveImage(Uint8List.fromList(bytes),fileName:name,skipIfExists:false);
+      if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(result.isSuccess?'Tersimpan di galeri':'Gagal menyimpan')));
+    }catch(e){
+      if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal menyimpan: $e')));
+    }
+  }
+
   Future<void> _downloadFilePlaceholder(String url) async{try{final res=await http.get(Uri.parse(url));final dir=await getApplicationDocumentsDirectory();final f=File('${dir.path}/download_${DateTime.now().millisecondsSinceEpoch}');await f.writeAsBytes(res.bodyBytes);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('File tersimpan: ${f.path}')));}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal: $e')));}}
+}
+
+class _ImageViewerPage extends StatelessWidget{
+  final String path;
+  final Map<String,dynamic> message;
+  final VoidCallback onSave;
+  const _ImageViewerPage({required this.path,required this.message,required this.onSave});
+  @override Widget build(BuildContext context)=>Scaffold(backgroundColor:Colors.black,appBar:AppBar(backgroundColor:Colors.black,title:const SizedBox.shrink(),actions:[IconButton(tooltip:'Simpan ke galeri',onPressed:onSave,icon:const Icon(Icons.download_rounded))]),body:Center(child:InteractiveViewer(minScale:.8,maxScale:4,child:Image.file(File(path),fit:BoxFit.contain,errorBuilder:(_,__,___)=>const Icon(Icons.broken_image,color:Colors.white,size:48)))));
 }
 
 class _AttachmentChoice extends StatelessWidget {
@@ -604,4 +768,4 @@ class _TypingTextState extends State<_TypingText> with SingleTickerProviderState
 class _ChatSearchDelegate extends SearchDelegate<String>{final Api api;final String token;final String username;final List<Map<String,dynamic>> localMessages;_ChatSearchDelegate({required this.api,required this.token,required this.username,required this.localMessages});List<Map<String,dynamic>> _local(String q)=>localMessages.where((m)=>m['message']?.toString().toLowerCase().contains(q.toLowerCase())==true).toList();@override List<Widget>? buildActions(BuildContext c)=>[if(query.isNotEmpty)IconButton(onPressed:()=>query='',icon:const Icon(Icons.clear))];@override Widget? buildLeading(BuildContext c)=>IconButton(onPressed:()=>close(c,''),icon:const Icon(Icons.arrow_back));@override Widget buildResults(BuildContext context)=>_results(context);@override Widget buildSuggestions(BuildContext context)=>_results(context);Widget _results(BuildContext context){final q=query.trim();if(q.isEmpty)return const Center(child:Text('Ketik kata untuk mencari chat'));return FutureBuilder<List<dynamic>>(future:api.searchMessages(token,username,q),builder:(context,s){List<Map<String,dynamic>> rows=[];if(s.hasData){rows=s.data!.map((e)=>Map<String,dynamic>.from(e)).toList();}if(rows.isEmpty)rows=_local(q);if(rows.isEmpty)return const Center(child:Text('Tidak Ditemukan'));return ListView.builder(itemCount:rows.length,itemBuilder:(_,i){final m=rows[i];return ListTile(title:Text(m['message']?.toString()??m['fileName']?.toString()??''),subtitle:Text(m['createdAt']?.toString()??''));});});}}
 
 class ChatMediaPage extends StatefulWidget{final Session session;final String username;final String contactName;const ChatMediaPage({super.key,required this.session,required this.username,required this.contactName});@override State<ChatMediaPage> createState()=>_ChatMediaPageState();}
-class _ChatMediaPageState extends State<ChatMediaPage>{final api=Api();Map<String,dynamic> data={'media':[],'docs':[],'links':[]};bool loading=true;@override void initState(){super.initState();_load();}Future<void> _load()async{try{final d=await api.chatMedia(widget.session.token!,widget.username);if(mounted)setState(()=>data=d);}catch(_){}finally{if(mounted)setState(()=>loading=false);}}@override Widget build(BuildContext context)=>DefaultTabController(length:3,child:Scaffold(appBar:AppBar(title:Text(widget.contactName),bottom:const TabBar(tabs:[Tab(text:'Media'),Tab(text:'Dok'),Tab(text:'Tautan')])),body:loading?const Center(child:CircularProgressIndicator()):TabBarView(children:[_media(),_docs(),_links()])));Widget _empty(String text)=>Center(child:Text(text,style:const TextStyle(color:Colors.white54)));Widget _media(){final list=List<dynamic>.from(data['media']??[]);if(list.isEmpty)return _empty('Tidak ada media');return GridView.builder(padding:const EdgeInsets.all(2),gridDelegate:const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount:3,crossAxisSpacing:2,mainAxisSpacing:2),itemCount:list.length,itemBuilder:(_,i){final m=Map<String,dynamic>.from(list[i]);final type=m['type'];final url=(m['url']??m['mediaUrl']??'').toString();return Stack(fit:StackFit.expand,children:[if(type=='image')Image.network(url,fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Icon(Icons.broken_image))else Container(color:Colors.black38,child:const Icon(Icons.play_circle_fill,size:42)),if(type=='video')const Positioned(right:5,bottom:5,child:Icon(Icons.videocam,size:16))]);});}Widget _docs(){final list=List<dynamic>.from(data['docs']??[]);if(list.isEmpty)return _empty('Tidak ada dokumen');return ListView.builder(itemCount:list.length,itemBuilder:(_,i){final m=Map<String,dynamic>.from(list[i]);return ListTile(leading:const Icon(Icons.insert_drive_file),title:Text(m['fileName']?.toString()??'Dokumen'),subtitle:Text(m['createdAt']?.toString()??''));});}Widget _links(){final list=List<dynamic>.from(data['links']??[]);if(list.isEmpty)return _empty('Tidak ada tautan');return ListView.builder(itemCount:list.length,itemBuilder:(_,i){final m=Map<String,dynamic>.from(list[i]);return ListTile(leading:const Icon(Icons.link),title:Text(m['message']?.toString()??''),subtitle:Text(m['createdAt']?.toString()??''));});}}
+class _ChatMediaPageState extends State<ChatMediaPage>{final api=Api();Map<String,dynamic> data={'media':[],'docs':[],'links':[]};bool loading=true;@override void initState(){super.initState();_load();}Future<void> _load()async{try{final d=await api.chatMedia(widget.session.token!,widget.username);if(mounted)setState(()=>data=d);}catch(_){}finally{if(mounted)setState(()=>loading=false);}}@override Widget build(BuildContext context)=>DefaultTabController(length:3,child:Scaffold(appBar:AppBar(title:Text(widget.contactName),bottom:const TabBar(tabs:[Tab(text:'Media'),Tab(text:'Dok'),Tab(text:'Tautan')])),body:loading?const Center(child:CircularProgressIndicator()):TabBarView(children:[_media(),_docs(),_links()])));Widget _empty(String text)=>Center(child:Text(text,style:const TextStyle(color:Colors.white54)));Widget _media(){final list=List<dynamic>.from(data['media']??[]);if(list.isEmpty)return _empty('Tidak ada media');return GridView.builder(padding:const EdgeInsets.all(2),gridDelegate:const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount:3,crossAxisSpacing:2,mainAxisSpacing:2),itemCount:list.length,itemBuilder:(_,i){final m=Map<String,dynamic>.from(list[i]);final type=m['type'];final url=(m['url']??m['mediaUrl']??'').toString();return Stack(fit:StackFit.expand,children:[if(type=='image')Image.network((m['previewUrl']??url).toString(),fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Icon(Icons.broken_image))else Container(color:Colors.black38,child:const Icon(Icons.play_circle_fill,size:42)),if(type=='video')const Positioned(right:5,bottom:5,child:Icon(Icons.videocam,size:16))]);});}Widget _docs(){final list=List<dynamic>.from(data['docs']??[]);if(list.isEmpty)return _empty('Tidak ada dokumen');return ListView.builder(itemCount:list.length,itemBuilder:(_,i){final m=Map<String,dynamic>.from(list[i]);return ListTile(leading:const Icon(Icons.insert_drive_file),title:Text(m['fileName']?.toString()??'Dokumen'),subtitle:Text(m['createdAt']?.toString()??''));});}Widget _links(){final list=List<dynamic>.from(data['links']??[]);if(list.isEmpty)return _empty('Tidak ada tautan');return ListView.builder(itemCount:list.length,itemBuilder:(_,i){final m=Map<String,dynamic>.from(list[i]);return ListTile(leading:const Icon(Icons.link),title:Text(m['message']?.toString()??''),subtitle:Text(m['createdAt']?.toString()??''));});}}
