@@ -1,50 +1,75 @@
-# ChatWithU + Pterodactyl
+# Pterodactyl Setup • ChatWithU Server V4
 
-## 1. Backend Node.js
-Upload the `server/` folder to a Pterodactyl Node.js server.
+## 1. Server
 
-Recommended:
-- Node.js 20+
-- Startup command: `npm install --omit=dev && node index.js`
-- Environment: `PORT` should match the allocated server port.
-- For the requested endpoint, use `PORT=5201` **only if Pterodactyl has allocated/exposed port 5201 to this server**.
-- `PUBLIC_BASE_URL=http://panelbaru2.rexzystr.my.id:5201`
-- Set a long random `JWT_SECRET`.
+Create a Node.js server/container using Node **20+**.
 
-The backend binds to `0.0.0.0` so Pterodactyl can expose it through its allocation.
+Allocate:
 
-## 2. Important Pterodactyl detail
-`panelbaru2.rexzystr.my.id:5201` must route to the **Node.js server allocation**, not merely to the Pterodactyl panel itself. If `:5201` is currently the panel's port, create/assign a separate allocation for the ChatWithU server and use that public host:port in `PUBLIC_BASE_URL` and the Flutter `CHATWITHU_BASE_URL`.
-
-## 3. Flutter APK
-The default API endpoint is already:
-
-`http://panelbaru2.rexzystr.my.id:5201`
-
-Build with:
-
-```bash
-flutter pub get
-flutter analyze
-flutter test
-flutter build apk --release --dart-define=CHATWITHU_BASE_URL=http://panelbaru2.rexzystr.my.id:5201
+```text
+5201
 ```
 
-If your Pterodactyl allocation uses another host/port, change the dart-define value.
+## 2. Environment
 
-## Included server features
-- Register/login/JWT
-- Contacts with a separate saved contact name
-- Realtime Socket.IO messages
-- Typing indicator events
-- Read status
-- Image/video/file uploads
-- Profile avatar uploads
-- Per-user clear-chat history
-- In-chat search
-- Media/document/link index
-- Verified badge/profile state
-- Basic banned-account enforcement
-- JSON persistence (no native database dependency)
+```text
+PORT=5201
+PUBLIC_BASE_URL=http://YOUR-DOMAIN:5201
+JWT_SECRET=<random secret 32+ chars>
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin
+```
 
-This JSON backend is intended for a small/self-hosted deployment. For a large production service, move persistence to PostgreSQL/MySQL and put the API behind HTTPS.
+`ADMIN_PASSWORD` is the initial/bootstrap credential. This build defaults to `admin` if the Pterodactyl variable is missing. Once inside `/admin`, you can change the admin password from **Settings → Admin password**. The changed password is stored as a bcrypt hash in `data/db.json`.
+
+## 3. Startup
+
+```bash
+npm install --omit=dev && node index.js
+```
+
+## 4. Check
+
+```text
+http://YOUR-DOMAIN:5201/health
+```
+
+Expected:
+
+```json
+{"ok":true}
+```
+
+## 5. Admin
+
+Open:
+
+```text
+http://YOUR-DOMAIN:5201/admin
+```
+
+The dashboard includes:
+
+- Overview / server pulse
+- Full user list
+- User detail editor
+- Verified toggle
+- Banned toggle
+- Built-in and custom badge controls
+- User password reset
+- Message moderation
+- Activity/audit log
+- Server settings
+- Admin password change
+
+## 6. Persistence
+
+Keep these paths persistent if your Pterodactyl setup recreates containers:
+
+```text
+data/db.json
+uploads/avatars/
+uploads/media/
+```
+
+For production, back up `data/db.json` regularly.

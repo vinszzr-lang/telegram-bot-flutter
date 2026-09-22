@@ -1,0 +1,15 @@
+{
+  "settings": {
+    "appName": "ChatWithU",
+    "maintenance": false,
+    "registrationEnabled": true,
+    "maxUploadMb": 50,
+    "announcement": ""
+  },
+  "users": [],
+  "contacts": [],
+  "messages": [],
+  "hidden": [],
+  "admins": [],
+  "activity": []
+}
