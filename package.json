@@ -4,14 +4,19 @@
   "private": true,
   "description": "ChatWithU Node.js + Socket.IO backend for Pterodactyl",
   "main": "index.js",
-  "scripts": {"start": "node index.js"},
-  "engines": {"node": ">=20"},
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "sharp": "^0.34.3"
   }
 }

@@ -8,21 +8,28 @@ const multer = require('multer');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Server } = require('socket.io');
+const sharp = require('sharp');
 
-const PORT = Number(process.env.PORT || 5201);
+const PORT = Number(process.env.PORT || 2667);
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-pterodactyl';
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://panelbaru2.rexzystr.my.id:${PORT}`;
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://malzoffc.pterocloud.my.id:${PORT}`;
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(path.join(UPLOAD_DIR, 'avatars'), { recursive: true });
 fs.mkdirSync(path.join(UPLOAD_DIR, 'media'), { recursive: true });
+fs.mkdirSync(path.join(UPLOAD_DIR, 'previews'), { recursive: true });
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 const initial = { users: [], contacts: [], messages: [], hidden: [], admins: [] };
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2));
 let db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
 for (const k of Object.keys(initial)) if (!Array.isArray(db[k])) db[k] = [];
+// The built-in developer account is intentionally the only account allowed to create admin accounts.
+// Credentials: admin / admin. Change DEV_PASSWORD immediately for any public deployment.
+if (!db.admins.some(a => a.username === 'admin')) {
+  db.admins.push({ username: 'admin', passwordHash: bcrypt.hashSync(process.env.DEV_PASSWORD || 'admin', 10), role: 'developer', createdAt: now() });
+}
 function save() { fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); }
 function id() { return crypto.randomUUID(); }
 function now() { return new Date().toISOString(); }
@@ -53,15 +60,17 @@ function contactFor(owner, username) {
 const app=express();
 app.use(cors({origin:true,credentials:true}));
 app.use(express.json({limit:'2mb'}));
-app.use('/uploads',express.static(UPLOAD_DIR));
+app.use('/uploads/avatars',express.static(path.join(UPLOAD_DIR,'avatars')));
 app.get('/',(req,res)=>res.json({name:'ChatWithU API',ok:true,version:'2.1.0',admin:'/admin'}));
 app.get('/admin',(req,res)=>res.sendFile(path.join(__dirname,'admin.html')));
 app.get('/health',(req,res)=>res.json({ok:true,time:now()}));
+app.get('/media-preview/:id',(req,res)=>{const m=db.messages.find(x=>x.id===req.params.id);if(!m||m.type!=='image'||m.mediaAvailable===false||!m.previewFile)return res.status(404).end();const f=path.join(UPLOAD_DIR,'previews',path.basename(m.previewFile));if(!fs.existsSync(f))return res.status(404).end();res.sendFile(f);});
 
 const avatarStorage=multer.diskStorage({destination:path.join(UPLOAD_DIR,'avatars'),filename:(req,file,cb)=>cb(null,`${Date.now()}-${crypto.randomBytes(5).toString('hex')}${path.extname(file.originalname).toLowerCase()}`)});
 const mediaStorage=multer.diskStorage({destination:path.join(UPLOAD_DIR,'media'),filename:(req,file,cb)=>cb(null,`${Date.now()}-${crypto.randomBytes(5).toString('hex')}${path.extname(file.originalname).toLowerCase()}`)});
 const avatarUpload=multer({storage:avatarStorage,limits:{fileSize:10*1024*1024},fileFilter:(req,file,cb)=>cb(null,String(file.mimetype||'').startsWith('image/'))});
 const mediaUpload=multer({storage:mediaStorage,limits:{fileSize:50*1024*1024}});
+const activeMediaDownloads=new Set();
 
 app.post('/api/auth/register',async(req,res)=>{
   const {firstName='',lastName='',username='',password=''}=req.body||{}; const un=String(username).trim().toLowerCase();
@@ -92,14 +101,43 @@ app.get('/api/users/:username',auth,(req,res)=>{const u=getUser(req.params.usern
 function adminAuth(req,res,next){
   const raw=req.headers.authorization||'';
   if(!raw.startsWith('Bearer ')) return res.status(401).json({message:'Token admin diperlukan'});
-  try{const p=jwt.verify(raw.slice(7),JWT_SECRET);if(p.role!=='admin')throw new Error('role');req.admin=p;next();}catch(e){return res.status(401).json({message:'Token admin tidak valid'});}
+  try{
+    const p=jwt.verify(raw.slice(7),JWT_SECRET);
+    const a=db.admins.find(x=>x.username===p.username);
+    if(!a||!['developer','admin'].includes(a.role)||a.banned) throw new Error('role');
+    req.admin={username:a.username,role:a.role};
+    next();
+  }catch(e){return res.status(401).json({message:'Token admin tidak valid'});}
 }
 app.post('/api/admin/login',async(req,res)=>{
-  const user=process.env.ADMIN_USERNAME||'admin'; const pass=process.env.ADMIN_PASSWORD||'change-me';
-  if(String(req.body?.username||'')!==user||String(req.body?.password||'')!==pass)return res.status(401).json({message:'Login admin gagal'});
-  res.json({token:jwt.sign({role:'admin',username:user},JWT_SECRET,{expiresIn:'7d'})});
+  const user=String(req.body?.username||'').trim().toLowerCase();
+  const pass=String(req.body?.password||'');
+  const a=db.admins.find(x=>x.username===user);
+  if(!a||a.banned||!(await bcrypt.compare(pass,a.passwordHash)))return res.status(401).json({message:'Login admin gagal'});
+  res.json({token:jwt.sign({role:a.role,username:a.username},JWT_SECRET,{expiresIn:'7d'}),role:a.role,username:a.username});
 });
-app.get('/api/admin/me',adminAuth,(req,res)=>res.json({username:req.admin.username,role:'admin'}));
+app.get('/api/admin/me',adminAuth,(req,res)=>res.json({username:req.admin.username,role:req.admin.role}));
+app.get('/api/admin/admins',adminAuth,(req,res)=>{
+  res.json(db.admins.map(a=>({username:a.username,role:a.role,createdAt:a.createdAt,banned:!!a.banned})));
+});
+app.post('/api/admin/admins',adminAuth,async(req,res)=>{
+  if(req.admin.role!=='developer') return res.status(403).json({message:'Hanya developer yang dapat membuat akun admin.'});
+  const username=String(req.body?.username||'').trim().toLowerCase();
+  const password=String(req.body?.password||'');
+  if(!/^[a-z0-9_.-]{3,32}$/.test(username)) return res.status(400).json({message:'Username admin tidak valid.'});
+  if(password.length<4) return res.status(400).json({message:'Password admin minimal 4 karakter.'});
+  if(db.admins.some(a=>a.username===username)||getUser(username)) return res.status(409).json({message:'Username sudah digunakan.'});
+  const a={username,passwordHash:await bcrypt.hash(password,10),role:'admin',banned:false,createdAt:now()};
+  db.admins.push(a);save();res.json({username:a.username,role:a.role,createdAt:a.createdAt});
+});
+app.patch('/api/admin/admins/:username',adminAuth,async(req,res)=>{
+  const a=db.admins.find(x=>x.username===String(req.params.username).toLowerCase());
+  if(!a)return res.status(404).json({message:'Admin tidak ditemukan'});
+  if(a.role==='developer'&&req.admin.username!==a.username)return res.status(403).json({message:'Akun developer tidak dapat diubah admin lain.'});
+  if(req.body?.password!==undefined){if(String(req.body.password).length<4)return res.status(400).json({message:'Password minimal 4 karakter.'});a.passwordHash=await bcrypt.hash(String(req.body.password),10);}
+  if(req.body?.banned!==undefined&&a.role!=='developer')a.banned=!!req.body.banned;
+  save();res.json({username:a.username,role:a.role,banned:!!a.banned});
+});
 app.get('/api/admin/stats',adminAuth,(req,res)=>res.json({users:db.users.length,messages:db.messages.length,contacts:db.contacts.length}));
 app.get('/api/admin/users',adminAuth,(req,res)=>{const q=String(req.query.q||'').toLowerCase();res.json(db.users.filter(u=>!q||JSON.stringify(safeUser(u)).toLowerCase().includes(q)).map(u=>({...safeUser(u),banned:!!u.banned})));});
 app.get('/api/admin/users/:username',adminAuth,(req,res)=>{const u=getUser(req.params.username);if(!u)return res.status(404).json({message:'User tidak ditemukan'});res.json({...safeUser(u),banned:!!u.banned});});
@@ -122,7 +160,8 @@ app.get('/api/sync',auth,(req,res)=>{const contacts=db.contacts.filter(c=>c.owne
 
 app.get('/api/chats/:username/messages',auth,(req,res)=>{const other=String(req.params.username);let msgs=visibleMessages(req.user.username,other);const since=req.query.since?Date.parse(req.query.since):NaN;if(Number.isFinite(since))msgs=msgs.filter(m=>Date.parse(m.updatedAt||m.createdAt)>since);res.json(msgs.map(messageOut));});
 app.post('/api/chats/:username/messages',auth,(req,res)=>{const other=String(req.params.username);if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});const text=String(req.body?.message||'').trim();if(!text)return res.status(400).json({message:'Pesan kosong'});const m={id:id(),type:'text',message:text,url:'',mediaUrl:'',senderUsername:req.user.username,recipientUsername:other,status:'sent',createdAt:now(),updatedAt:now()};db.messages.push(m);save();emitUser(other,'message:new',messageOut(m));emitUser(req.user.username,'message:new',messageOut(m));res.json(m);});
-app.post('/api/chats/:username/media',auth,mediaUpload.single('file'),(req,res)=>{const other=String(req.params.username);if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});if(!req.file)return res.status(400).json({message:'File tidak valid'});const type=['image','video','file'].includes(req.body?.type)?req.body.type:'file'; const mime=String(req.file.mimetype||'').toLowerCase(); if(type==='image'&&!mime.startsWith('image/')) return res.status(400).json({message:'Lampiran bukan foto.'}); if(type==='video'&&!mime.startsWith('video/')) return res.status(400).json({message:'Lampiran bukan video.'});const url=`${PUBLIC_BASE_URL}/uploads/media/${req.file.filename}`;const m={id:id(),type,message:req.file.originalname,url,mediaUrl:url,fileName:req.file.originalname,mimeType:req.file.mimetype,senderUsername:req.user.username,recipientUsername:other,status:'sent',createdAt:now(),updatedAt:now()};db.messages.push(m);save();emitUser(other,'message:new',m);emitUser(req.user.username,'message:new',m);res.json(m);});
+app.post('/api/chats/:username/media',auth,mediaUpload.single('file'),async(req,res)=>{const other=String(req.params.username);if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});if(!req.file)return res.status(400).json({message:'File tidak valid'});const type=['image','video','file'].includes(req.body?.type)?req.body.type:'file'; const mime=String(req.file.mimetype||'').toLowerCase(); if(type==='image'&&!mime.startsWith('image/')) return res.status(400).json({message:'Lampiran bukan foto.'}); if(type==='video'&&!mime.startsWith('video/')) return res.status(400).json({message:'Lampiran bukan video.'});const mId=id();const url=`${PUBLIC_BASE_URL}/uploads/media/${req.file.filename}`;const downloadUrl=`${PUBLIC_BASE_URL}/api/media/${mId}/download`;let previewFile='';if(type==='image'){previewFile=`${mId}.jpg`;try{await sharp(req.file.path).resize(600,600,{fit:'inside',withoutEnlargement:true}).jpeg({quality:45,mozjpeg:true}).toFile(path.join(UPLOAD_DIR,'previews',previewFile));}catch(e){previewFile='';}}const previewUrl=previewFile?`${PUBLIC_BASE_URL}/media-preview/${mId}`:'';const m={id:mId,type,message:req.file.originalname,url,mediaUrl:url,downloadUrl,previewUrl,storageFile:req.file.filename,previewFile,fileName:req.file.originalname,mimeType:req.file.mimetype,fileSize:req.file.size,mediaAvailable:true,senderUsername:req.user.username,recipientUsername:other,status:'sent',createdAt:now(),updatedAt:now()};db.messages.push(m);save();emitUser(other,'message:new',m);emitUser(req.user.username,'message:new',m);res.json(m);});
+app.get('/api/media/:id/download',auth,(req,res)=>{const m=db.messages.find(x=>x.id===req.params.id);if(!m||!['image','video'].includes(m.type))return res.status(404).json({message:'Media tidak ditemukan'});if(m.recipientUsername!==req.user.username)return res.status(403).json({message:'Media hanya bisa diambil oleh penerima.'});if(m.mediaAvailable===false)return res.status(410).json({message:'Media sudah diambil dari server.'});if(activeMediaDownloads.has(m.id))return res.status(409).json({message:'Media sedang diunduh.'});const filename=path.basename(String(m.storageFile||''));if(!filename)return res.status(404).json({message:'File media tidak tersedia.'});const filePath=path.join(UPLOAD_DIR,'media',filename);if(!fs.existsSync(filePath)){m.mediaAvailable=false;save();return res.status(410).json({message:'File media sudah tidak tersedia.'});}activeMediaDownloads.add(m.id);res.download(filePath,m.fileName||filename,(err)=>{activeMediaDownloads.delete(m.id);if(err)return;fs.unlink(filePath,(unlinkErr)=>{if(unlinkErr&&unlinkErr.code!=='ENOENT')console.error('Gagal menghapus media:',unlinkErr);if(m.previewFile){const previewPath=path.join(UPLOAD_DIR,'previews',path.basename(m.previewFile));fs.unlink(previewPath,()=>{});}m.mediaAvailable=false;m.updatedAt=now();save();});});});
 app.post('/api/chats/:username/read',auth,(req,res)=>{const other=String(req.params.username);db.messages.forEach(m=>{if(m.senderUsername===other&&m.recipientUsername===req.user.username)m.status='read';});save();emitUser(other,'message:read',{username:req.user.username,other});res.json({ok:true});});
 app.post('/api/chats/:username/clear',auth,(req,res)=>{const other=String(req.params.username);db.hidden=db.hidden.filter(h=>!(h.owner===req.user.username&&h.other===other));db.hidden.push({owner:req.user.username,other,before:now()});save();res.json({ok:true});});
 app.get('/api/chats/:username/search',auth,(req,res)=>{const q=String(req.query.q||'').trim().toLowerCase();if(!q)return res.json([]);res.json(visibleMessages(req.user.username,String(req.params.username)).filter(m=>String(m.message||m.fileName||'').toLowerCase().includes(q)).map(messageOut));});
