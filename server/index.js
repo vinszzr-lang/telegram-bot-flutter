@@ -60,7 +60,18 @@ app.get('/health',(req,res)=>res.json({ok:true,time:now()}));
 
 const avatarStorage=multer.diskStorage({destination:path.join(UPLOAD_DIR,'avatars'),filename:(req,file,cb)=>cb(null,`${Date.now()}-${crypto.randomBytes(5).toString('hex')}${path.extname(file.originalname).toLowerCase()}`)});
 const mediaStorage=multer.diskStorage({destination:path.join(UPLOAD_DIR,'media'),filename:(req,file,cb)=>cb(null,`${Date.now()}-${crypto.randomBytes(5).toString('hex')}${path.extname(file.originalname).toLowerCase()}`)});
-const avatarUpload=multer({storage:avatarStorage,limits:{fileSize:10*1024*1024},fileFilter:(req,file,cb)=>cb(null,String(file.mimetype||'').startsWith('image/'))});
+const imageExtensions = new Set(['.jpg','.jpeg','.png','.webp','.gif','.heic','.heif','.bmp']);
+const videoExtensions = new Set(['.mp4','.m4v','.mov','.webm','.mkv','.3gp']);
+function looksLikeImage(file) {
+  const mime = String(file.mimetype || '').toLowerCase();
+  const ext = path.extname(String(file.originalname || '')).toLowerCase();
+  return mime.startsWith('image/') || ((mime === 'application/octet-stream' || !mime) && imageExtensions.has(ext));
+}
+const avatarUpload=multer({
+  storage:avatarStorage,
+  limits:{fileSize:10*1024*1024},
+  fileFilter:(req,file,cb)=>cb(null,looksLikeImage(file))
+});
 const mediaUpload=multer({storage:mediaStorage,limits:{fileSize:50*1024*1024}});
 
 app.post('/api/auth/register',async(req,res)=>{
@@ -122,7 +133,7 @@ app.get('/api/sync',auth,(req,res)=>{const contacts=db.contacts.filter(c=>c.owne
 
 app.get('/api/chats/:username/messages',auth,(req,res)=>{const other=String(req.params.username);let msgs=visibleMessages(req.user.username,other);const since=req.query.since?Date.parse(req.query.since):NaN;if(Number.isFinite(since))msgs=msgs.filter(m=>Date.parse(m.updatedAt||m.createdAt)>since);res.json(msgs.map(messageOut));});
 app.post('/api/chats/:username/messages',auth,(req,res)=>{const other=String(req.params.username);if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});const text=String(req.body?.message||'').trim();if(!text)return res.status(400).json({message:'Pesan kosong'});const m={id:id(),type:'text',message:text,url:'',mediaUrl:'',senderUsername:req.user.username,recipientUsername:other,status:'sent',createdAt:now(),updatedAt:now()};db.messages.push(m);save();emitUser(other,'message:new',messageOut(m));emitUser(req.user.username,'message:new',messageOut(m));res.json(m);});
-app.post('/api/chats/:username/media',auth,mediaUpload.single('file'),(req,res)=>{const other=String(req.params.username);if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});if(!req.file)return res.status(400).json({message:'File tidak valid'});const type=['image','video','file'].includes(req.body?.type)?req.body.type:'file'; const mime=String(req.file.mimetype||'').toLowerCase(); if(type==='image'&&!mime.startsWith('image/')) return res.status(400).json({message:'Lampiran bukan foto.'}); if(type==='video'&&!mime.startsWith('video/')) return res.status(400).json({message:'Lampiran bukan video.'});const url=`${PUBLIC_BASE_URL}/uploads/media/${req.file.filename}`;const m={id:id(),type,message:req.file.originalname,url,mediaUrl:url,fileName:req.file.originalname,mimeType:req.file.mimetype,senderUsername:req.user.username,recipientUsername:other,status:'sent',createdAt:now(),updatedAt:now()};db.messages.push(m);save();emitUser(other,'message:new',m);emitUser(req.user.username,'message:new',m);res.json(m);});
+app.post('/api/chats/:username/media',auth,mediaUpload.single('file'),(req,res)=>{const other=String(req.params.username);if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});if(!req.file)return res.status(400).json({message:'File tidak valid'});const type=['image','video','file'].includes(req.body?.type)?req.body.type:'file'; const mime=String(req.file.mimetype||'').toLowerCase(); const ext=path.extname(String(req.file.originalname||'')).toLowerCase(); const imageOk=mime.startsWith('image/')||((mime==='application/octet-stream'||!mime)&&imageExtensions.has(ext)); const videoOk=mime.startsWith('video/')||((mime==='application/octet-stream'||!mime)&&videoExtensions.has(ext)); if(type==='image'&&!imageOk) return res.status(400).json({message:'Lampiran bukan foto.'}); if(type==='video'&&!videoOk) return res.status(400).json({message:'Lampiran bukan video.'});const url=`${PUBLIC_BASE_URL}/uploads/media/${req.file.filename}`;const m={id:id(),type,message:req.file.originalname,url,mediaUrl:url,fileName:req.file.originalname,mimeType:req.file.mimetype,senderUsername:req.user.username,recipientUsername:other,status:'sent',createdAt:now(),updatedAt:now()};db.messages.push(m);save();emitUser(other,'message:new',m);emitUser(req.user.username,'message:new',m);res.json(m);});
 app.post('/api/chats/:username/read',auth,(req,res)=>{const other=String(req.params.username);db.messages.forEach(m=>{if(m.senderUsername===other&&m.recipientUsername===req.user.username)m.status='read';});save();emitUser(other,'message:read',{username:req.user.username,other});res.json({ok:true});});
 app.post('/api/chats/:username/clear',auth,(req,res)=>{const other=String(req.params.username);db.hidden=db.hidden.filter(h=>!(h.owner===req.user.username&&h.other===other));db.hidden.push({owner:req.user.username,other,before:now()});save();res.json({ok:true});});
 app.get('/api/chats/:username/search',auth,(req,res)=>{const q=String(req.query.q||'').trim().toLowerCase();if(!q)return res.json([]);res.json(visibleMessages(req.user.username,String(req.params.username)).filter(m=>String(m.message||m.fileName||'').toLowerCase().includes(q)).map(messageOut));});

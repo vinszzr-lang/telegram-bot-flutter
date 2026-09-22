@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 
 class ApiException implements Exception {
   final int status;
@@ -55,10 +56,39 @@ class Api {
   Future<Map<String, dynamic>> changeUsername(String token, String username) async =>
       Map<String, dynamic>.from(await request('PATCH', '/api/auth/username', token: token, body: {'username': username}));
 
+  MediaType? _contentTypeForPath(String path) {
+    final ext = path.toLowerCase().split('.').last;
+    const imageExt = {
+      'jpg': 'jpeg',
+      'jpeg': 'jpeg',
+      'png': 'png',
+      'webp': 'webp',
+      'gif': 'gif',
+      'heic': 'heic',
+      'heif': 'heif',
+      'bmp': 'bmp',
+    };
+    const videoExt = {
+      'mp4': 'mp4',
+      'm4v': 'mp4',
+      'mov': 'quicktime',
+      'webm': 'webm',
+      'mkv': 'x-matroska',
+      '3gp': '3gpp',
+    };
+    if (imageExt.containsKey(ext)) return MediaType('image', imageExt[ext]!);
+    if (videoExt.containsKey(ext)) return MediaType('video', videoExt[ext]!);
+    return null;
+  }
+
   Future<Map<String, dynamic>> uploadAvatar(String token, File file) async {
     final req = http.MultipartRequest('POST', uri('/api/profile/avatar'));
     req.headers['Authorization'] = 'Bearer $token';
-    req.files.add(await http.MultipartFile.fromPath('file', file.path));
+    req.files.add(await http.MultipartFile.fromPath(
+      'file',
+      file.path,
+      contentType: _contentTypeForPath(file.path) ?? MediaType('image', 'jpeg'),
+    ));
     final res = await req.send();
     final text = await res.stream.bytesToString();
     dynamic data;
@@ -106,7 +136,15 @@ class Api {
     final req = http.MultipartRequest('POST', uri('/api/chats/${Uri.encodeComponent(username)}/media'));
     req.headers['Authorization'] = 'Bearer $token';
     req.fields['type'] = type;
-    req.files.add(await http.MultipartFile.fromPath('file', file.path));
+    req.files.add(await http.MultipartFile.fromPath(
+      'file',
+      file.path,
+      contentType: type == 'image'
+          ? (_contentTypeForPath(file.path) ?? MediaType('image', 'jpeg'))
+          : type == 'video'
+              ? (_contentTypeForPath(file.path) ?? MediaType('video', 'mp4'))
+              : _contentTypeForPath(file.path),
+    ));
     final res = await req.send();
     final text = await res.stream.bytesToString();
     dynamic data;
