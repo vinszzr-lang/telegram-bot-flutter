@@ -527,7 +527,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       final size=_formatBytes(message['fileSize'] ?? message['size']);
       if(type=='image'){
         final image = downloaded
-            ? Image.file(File(localPath!),fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Center(child:Icon(Icons.broken_image)))
+            ? Image.file(File(localPath),fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Center(child:Icon(Icons.broken_image)))
             : ImageFiltered(imageFilter: ui.ImageFilter.blur(sigmaX: 11, sigmaY: 11),child: Image.network((message['previewUrl']??url).toString(),fit:BoxFit.cover,errorBuilder:(_,__,___)=>Container(color:Colors.black54,child:const Center(child:Icon(Icons.image_outlined,color:Colors.white54,size:42)))));
         body=GestureDetector(
           onTap: url.isEmpty ? null : () => downloaded || me ? _openImageViewer(url, message, localPath: downloaded ? _downloadedMediaPaths[id] : null) : null,
