@@ -270,13 +270,22 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       if (size <= 0) throw Exception('Foto/video tidak dapat dibaca.');
       if (size > 50 * 1024 * 1024) throw Exception('File maksimal 50 MB.');
 
-      if (type == 'image') {
-        final approved = await _previewImage(file, fileName);
-        if (!approved) return;
+      String? caption;
+      if (type == 'image' || type == 'video') {
+        final composed = await _composeMedia(file, type: type);
+        if (composed == null) return;
+        caption = composed.caption;
       }
+
       if (!mounted) return;
       setState(() => sendingMedia = true);
-      final result = await api.uploadMedia(widget.session.token!, username, file, type: type);
+      final result = await api.uploadMedia(
+        widget.session.token!,
+        username,
+        file,
+        type: type,
+        caption: caption,
+      );
       _mergeMessages([result]);
       // Keep the sender's own copy on-device. The server copy is only a relay
       // and may be deleted as soon as the recipient successfully downloads it.
@@ -300,9 +309,24 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     }
   }
 
+  Future<_MediaComposeResult?> _composeMedia(File file, {required String type}) async {
+    if (!await file.exists() || !mounted) return null;
+    return Navigator.of(context).push<_MediaComposeResult>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => _MediaComposerPage(
+          file: file,
+          type: type,
+          recipientName: contactName,
+        ),
+      ),
+    );
+  }
+
   Future<Directory> _stickerDirectory() async {
     final dir = await getApplicationDocumentsDirectory();
-    final out = Directory('${dir.path}/chatwithu_stickers');
+    final safeUser = widget.session.username.replaceAll(RegExp(r'[^a-zA-Z0-9_.-]'), '_');
+    final out = Directory('${dir.path}/chatwithu_stickers/$safeUser');
     await out.create(recursive: true);
     return out;
   }
@@ -339,17 +363,20 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
       const size = Size(512, 512);
-      final bg = Paint()..color = background;
-      canvas.drawRRect(RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(64)), bg);
       if (photo != null) {
+        // Foto dari galeri dipertahankan apa adanya: tidak diberi background
+        // warna, tidak dicrop, dan aspect ratio asli tetap terjaga.
         final image = await _decodeStickerImage(await photo.readAsBytes());
         final src = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
-        final dst = const Rect.fromLTWH(38, 38, 436, 436);
-        canvas.save();
-        canvas.clipRRect(RRect.fromRectAndRadius(dst, const Radius.circular(54)));
+        const box = Rect.fromLTWH(0, 0, 512, 512);
+        final scale = math.min(box.width / image.width, box.height / image.height);
+        final w = image.width * scale;
+        final h = image.height * scale;
+        final dst = Rect.fromLTWH((512 - w) / 2, (512 - h) / 2, w, h);
         canvas.drawImageRect(image, src, dst, Paint()..filterQuality = FilterQuality.high);
-        canvas.restore();
       } else {
+        final bg = Paint()..color = background;
+        canvas.drawRRect(RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(64)), bg);
         final painter = TextPainter(
           text: TextSpan(text: text ?? 'ChatWithU', style: const TextStyle(color: Colors.white, fontSize: 62, fontWeight: FontWeight.w800, height: 1.05)),
           textAlign: TextAlign.center,
@@ -438,44 +465,6 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       await LocalCache.saveMessages(username, messages);
       if (mounted) setState(() {});
     } catch (_) {}
-  }
-
-  Future<bool> _previewImage(File file, String fileName) async {
-    final result = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF10171A),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(26))),
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Center(child: Container(width: 42, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(10)))),
-              const SizedBox(height: 14),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 420),
-                  child: Image.file(file, fit: BoxFit.contain),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(fileName, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
-              const SizedBox(height: 14),
-              Row(children: [
-                Expanded(child: OutlinedButton(onPressed: () => Navigator.pop(sheetContext, false), child: const Text('Batal'))),
-                const SizedBox(width: 10),
-                Expanded(child: FilledButton.icon(onPressed: () => Navigator.pop(sheetContext, true), icon: const Icon(Icons.send_rounded), label: const Text('Kirim'))),
-              ]),
-            ],
-          ),
-        ),
-      ),
-    );
-    return result == true;
   }
 
   Future<void> _pickPhoto() async {
@@ -702,7 +691,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         if(downloaded || me) {
           final videoPath=localPath;
           if(videoPath!=null && videoPath.isNotEmpty && File(videoPath).existsSync()) {
-            body=_VideoBubble(path:videoPath);
+            body=GestureDetector(
+              onTap: () => _openVideoViewer(videoPath, message),
+              child: _VideoBubble(path:videoPath),
+            );
           } else {
             body=Container(width:230,height:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(10)),child:Stack(fit:StackFit.expand,alignment:Alignment.center,children:[Container(color:Colors.black45),const Center(child:Icon(Icons.play_circle_fill,size:54,color:Colors.white))]));
           }
@@ -719,7 +711,9 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     }else{
       body=Text(message['message']?.toString()??'',style:const TextStyle(fontSize:15));
     }
-    final max=MediaQuery.sizeOf(context).width*.82;final status=message['status']?.toString()??'sent';return Align(alignment:me?Alignment.centerRight:Alignment.centerLeft,child:ConstrainedBox(key:ValueKey(message['id']?.toString()),constraints:BoxConstraints(maxWidth:max),child:Container(margin:const EdgeInsets.only(bottom:5),padding:const EdgeInsets.fromLTRB(12,8,8,6),decoration:BoxDecoration(color:me?const Color(0xFF2A6B55):const Color(0xFF20282C),borderRadius:BorderRadius.circular(12)),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.end,children:[Align(alignment:Alignment.centerLeft,widthFactor:1,child:body),Row(mainAxisSize:MainAxisSize.min,children:[Text(_time(message['createdAt']),style:const TextStyle(fontSize:10,color:Colors.white54)),if(me)...[const SizedBox(width:3),_ticks(status)]])]))));
+    final max=MediaQuery.sizeOf(context).width*.82;final status=message['status']?.toString()??'sent';
+    final caption=(type=='image'||type=='video') ? (message['caption']?.toString()??'').trim() : '';
+    return Align(alignment:me?Alignment.centerRight:Alignment.centerLeft,child:ConstrainedBox(key:ValueKey(message['id']?.toString()),constraints:BoxConstraints(maxWidth:max),child:Container(margin:const EdgeInsets.only(bottom:5),padding:const EdgeInsets.fromLTRB(12,8,8,6),decoration:BoxDecoration(color:me?const Color(0xFF2A6B55):const Color(0xFF20282C),borderRadius:BorderRadius.circular(12)),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.end,children:[Align(alignment:Alignment.centerLeft,widthFactor:1,child:body),if(caption.isNotEmpty) ...[const SizedBox(height:6),Align(alignment:Alignment.centerLeft,child:Text(caption,style:const TextStyle(fontSize:14)))],Row(mainAxisSize:MainAxisSize.min,children:[Text(_time(message['createdAt']),style:const TextStyle(fontSize:10,color:Colors.white54)),if(me)...[const SizedBox(width:3),_ticks(status)]])]))));
   }
 
   Widget _mediaDownloadButton(Map<String,dynamic> message, String size) { final id=(message['id']??'').toString(); return Material(color:Colors.black54,borderRadius:BorderRadius.circular(28),child:InkWell(borderRadius:BorderRadius.circular(28),onTap:_downloadingMedia.contains(id)?null:()=>_downloadMediaToCache(message),child:Padding(padding:const EdgeInsets.symmetric(horizontal:14,vertical:9),child:_downloadingMedia.contains(id)?const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white)):Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.download_rounded,color:Colors.white,size:21),const SizedBox(width:7),Text(size.isEmpty?'Download':size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))])))); }
@@ -877,9 +871,177 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     }
   }
 
+  Future<void> _openVideoViewer(String path, Map<String,dynamic> message) async {
+    if (!File(path).existsSync() || !mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => _VideoViewerPage(path: path, message: message)));
+  }
+
   Future<void> _downloadFilePlaceholder(String url) async{try{final res=await http.get(Uri.parse(url));final dir=await getApplicationDocumentsDirectory();final f=File('${dir.path}/download_${DateTime.now().millisecondsSinceEpoch}');await f.writeAsBytes(res.bodyBytes);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('File tersimpan: ${f.path}')));}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal: $e')));}}
 }
 
+
+class _MediaComposeResult {
+  final String caption;
+  const _MediaComposeResult(this.caption);
+}
+
+class _MediaComposerPage extends StatefulWidget {
+  final File file;
+  final String type;
+  final String recipientName;
+
+  const _MediaComposerPage({
+    required this.file,
+    required this.type,
+    required this.recipientName,
+  });
+
+  @override
+  State<_MediaComposerPage> createState() => _MediaComposerPageState();
+}
+
+class _MediaComposerPageState extends State<_MediaComposerPage> {
+  final caption = TextEditingController();
+  VideoPlayerController? _video;
+  bool _videoReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.type == 'video') _initVideo();
+  }
+
+  Future<void> _initVideo() async {
+    try {
+      final c = VideoPlayerController.file(widget.file);
+      _video = c;
+      await c.initialize();
+      if (!mounted) {
+        await c.dispose();
+        return;
+      }
+      setState(() => _videoReady = true);
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    caption.dispose();
+    _video?.dispose();
+    super.dispose();
+  }
+
+  void _send() {
+    Navigator.pop(context, _MediaComposeResult(caption.text.trim()));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isVideo = widget.type == 'video';
+    final c = _video;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        leading: IconButton(
+          onPressed: () => Navigator.pop(context),
+          icon: const Icon(Icons.close_rounded),
+        ),
+        title: Text(widget.recipientName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: Center(
+                child: isVideo
+                    ? (_videoReady && c != null && c.value.isInitialized
+                        ? GestureDetector(
+                            onTap: () => setState(() {
+                              c.value.isPlaying ? c.pause() : c.play();
+                            }),
+                            child: AspectRatio(
+                              aspectRatio: c.value.aspectRatio > 0 ? c.value.aspectRatio : 16 / 9,
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  VideoPlayer(c),
+                                  if (!c.value.isPlaying)
+                                    const Center(
+                                      child: DecoratedBox(
+                                        decoration: BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                                        child: Padding(
+                                          padding: EdgeInsets.all(12),
+                                          child: Icon(Icons.play_arrow_rounded, color: Colors.white, size: 42),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          )
+                        : const CircularProgressIndicator())
+                    : InteractiveViewer(
+                        minScale: .8,
+                        maxScale: 4,
+                        child: Image.file(
+                          widget.file,
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white, size: 48),
+                        ),
+                      ),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+              decoration: const BoxDecoration(
+                color: Color(0xFF10171A),
+                border: Border(top: BorderSide(color: Colors.white10)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: caption,
+                      minLines: 1,
+                      maxLines: 4,
+                      maxLength: 500,
+                      decoration: InputDecoration(
+                        hintText: 'Tambah keterangan...',
+                        counterText: '',
+                        filled: true,
+                        fillColor: const Color(0xFF20282C),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    width: 50,
+                    height: 50,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Color(0xFF20C76B),
+                    ),
+                    child: IconButton(
+                      onPressed: _send,
+                      icon: const Icon(Icons.send_rounded, color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _VideoBubble extends StatefulWidget {
   final String path;
@@ -892,7 +1054,6 @@ class _VideoBubble extends StatefulWidget {
 class _VideoBubbleState extends State<_VideoBubble> {
   VideoPlayerController? _controller;
   bool _ready = false;
-  bool _failed = false;
 
   @override
   void initState() {
@@ -902,16 +1063,84 @@ class _VideoBubbleState extends State<_VideoBubble> {
 
   Future<void> _init() async {
     try {
-      final controller = VideoPlayerController.file(File(widget.path));
-      _controller = controller;
-      await controller.initialize();
+      final c = VideoPlayerController.file(File(widget.path));
+      _controller = c;
+      await c.initialize();
       if (!mounted) {
-        await controller.dispose();
+        await c.dispose();
         return;
       }
       setState(() => _ready = true);
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _controller;
+    if (!_ready || c == null || !c.value.isInitialized) {
+      return Container(width: 230, height: 160, color: Colors.black45, child: const Center(child: CircularProgressIndicator(strokeWidth: 2)));
+    }
+    final aspect = c.value.aspectRatio > 0 ? c.value.aspectRatio : 16 / 9;
+    return Container(
+      width: 230,
+      constraints: const BoxConstraints(maxHeight: 190),
+      decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(10)),
+      clipBehavior: Clip.antiAlias,
+      child: AspectRatio(
+        aspectRatio: aspect,
+        child: Stack(fit: StackFit.expand, children: [
+          VideoPlayer(c),
+          Container(color: Colors.black26),
+          const Center(child: DecoratedBox(
+            decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+            child: Padding(padding: EdgeInsets.all(10), child: Icon(Icons.play_arrow_rounded, color: Colors.black, size: 34)),
+          )),
+          Positioned(left: 8, right: 8, bottom: 7, child: VideoProgressIndicator(c, allowScrubbing: false, padding: EdgeInsets.zero, colors: const VideoProgressColors(playedColor: Colors.white, bufferedColor: Colors.white54, backgroundColor: Colors.white24))),
+        ]),
+      ),
+    );
+  }
+}
+
+class _VideoViewerPage extends StatefulWidget {
+  final String path;
+  final Map<String, dynamic> message;
+  const _VideoViewerPage({required this.path, required this.message});
+
+  @override
+  State<_VideoViewerPage> createState() => _VideoViewerPageState();
+}
+
+class _VideoViewerPageState extends State<_VideoViewerPage> {
+  VideoPlayerController? _controller;
+  bool _ready = false;
+  bool _showControls = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      final c = VideoPlayerController.file(File(widget.path));
+      _controller = c;
+      await c.initialize();
+      if (!mounted) {
+        await c.dispose();
+        return;
+      }
+      await c.play();
+      setState(() => _ready = true);
     } catch (_) {
-      if (mounted) setState(() => _failed = true);
+      if (mounted) setState(() => _ready = false);
     }
   }
 
@@ -921,80 +1150,33 @@ class _VideoBubbleState extends State<_VideoBubble> {
     super.dispose();
   }
 
-  void _toggle() {
-    final c = _controller;
-    if (c == null || !_ready) return;
-    if (c.value.isPlaying) {
-      c.pause();
-    } else {
-      if (c.value.position >= c.value.duration) {
-        c.seekTo(Duration.zero);
-      }
-      c.play();
-    }
-    setState(() {});
-  }
+  String _caption() => (widget.message['caption']?.toString() ?? '').trim();
 
   @override
   Widget build(BuildContext context) {
     final c = _controller;
-    return GestureDetector(
-      onTap: _toggle,
-      child: Container(
-        width: 230,
-        height: 160,
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), color: Colors.black),
-        child: !_ready || c == null
-            ? Center(
-                child: _failed
-                    ? const Icon(Icons.error_outline, color: Colors.white54, size: 40)
-                    : const CircularProgressIndicator(strokeWidth: 2.2, color: Colors.white),
-              )
-            : Stack(
-                fit: StackFit.expand,
-                children: [
-                  FittedBox(
-                    fit: BoxFit.cover,
-                    child: SizedBox(
-                      width: c.value.size.width,
-                      height: c.value.size.height,
-                      child: VideoPlayer(c),
-                    ),
-                  ),
-                  Center(
-                    child: AnimatedOpacity(
-                      opacity: c.value.isPlaying ? 0.0 : 1.0,
-                      duration: const Duration(milliseconds: 160),
-                      child: Container(
-                        width: 54,
-                        height: 54,
-                        decoration: const BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.play_arrow_rounded, color: Colors.black, size: 34),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    left: 8,
-                    right: 8,
-                    bottom: 7,
-                    child: VideoProgressIndicator(
-                      c,
-                      allowScrubbing: true,
-                      padding: EdgeInsets.zero,
-                      colors: const VideoProgressColors(
-                        playedColor: Colors.white,
-                        bufferedColor: Colors.white54,
-                        backgroundColor: Colors.white24,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-      ),
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(backgroundColor: Colors.black, title: const SizedBox.shrink()),
+      body: !_ready || c == null || !c.value.isInitialized
+          ? const Center(child: CircularProgressIndicator())
+          : GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => setState(() => _showControls = !_showControls),
+              child: Stack(children: [
+                Center(child: AspectRatio(aspectRatio: c.value.aspectRatio > 0 ? c.value.aspectRatio : 16 / 9, child: VideoPlayer(c))),
+                if (_showControls)
+                  Positioned(left: 12, right: 12, bottom: 12, child: Container(
+                    padding: const EdgeInsets.fromLTRB(8, 8, 8, 5),
+                    decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(12)),
+                    child: Column(children: [
+                      IconButton(onPressed: () { setState(() { c.value.isPlaying ? c.pause() : c.play(); }); }, iconSize: 36, color: Colors.white, icon: Icon(c.value.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill)),
+                      VideoProgressIndicator(c, allowScrubbing: true, padding: const EdgeInsets.only(bottom: 2), colors: const VideoProgressColors(playedColor: Colors.white, bufferedColor: Colors.white54, backgroundColor: Colors.white24)),
+                      if (_caption().isNotEmpty) Align(alignment: Alignment.centerLeft, child: Padding(padding: const EdgeInsets.only(top: 7, left: 4, right: 4), child: Text(_caption(), style: const TextStyle(color: Colors.white, fontSize: 14))))
+                    ]),
+                  )),
+              ]),
+            ),
     );
   }
 }
@@ -1067,15 +1249,24 @@ class _StickerMakerSheetState extends State<_StickerMakerSheet> {
         const SizedBox(height: 14),
         const Text('Buat Sticker Anda', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
         const SizedBox(height: 14),
-        Container(height: 180, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(22)), child: photo == null
-          ? Center(child: Text(text.text.isEmpty ? 'Sticker' : text.text, textAlign: TextAlign.center, maxLines: 4, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Colors.white)))
-          : ClipRRect(borderRadius: BorderRadius.circular(22), child: Image.file(File(photo!.path), fit: BoxFit.contain))),
+        Container(
+          height: 180,
+          decoration: photo == null
+              ? BoxDecoration(color: color, borderRadius: BorderRadius.circular(22))
+              : BoxDecoration(borderRadius: BorderRadius.circular(22)),
+          clipBehavior: Clip.antiAlias,
+          child: photo == null
+              ? Center(child: Text(text.text.isEmpty ? 'Sticker' : text.text, textAlign: TextAlign.center, maxLines: 4, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Colors.white)))
+              : Image.file(File(photo!.path), fit: BoxFit.contain),
+        ),
         const SizedBox(height: 14),
-        TextField(controller: text, maxLines: 3, onChanged: (_) => setState(() {}), decoration: const InputDecoration(labelText: 'Teks sticker', hintText: 'Ketik teks yang mau dijadikan sticker', border: OutlineInputBorder())),
-        const SizedBox(height: 12),
-        const Text('Warna background', style: TextStyle(fontWeight: FontWeight.w700)),
-        const SizedBox(height: 8),
-        Wrap(spacing: 10, runSpacing: 10, children: [for (final c in colors) GestureDetector(onTap: () => setState(() => color = c), child: Container(width: 38, height: 38, decoration: BoxDecoration(color: c, shape: BoxShape.circle, border: Border.all(color: color == c ? Colors.white : Colors.white24, width: color == c ? 3 : 1))))]),
+        TextField(controller: text, maxLines: 3, onChanged: (_) => setState(() {}), decoration: const InputDecoration(labelText: 'Teks sticker', hintText: 'Opsional — teks tetap bisa ditambahkan', border: OutlineInputBorder())),
+        if (photo == null) ...[
+          const SizedBox(height: 12),
+          const Text('Warna background', style: TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          Wrap(spacing: 10, runSpacing: 10, children: [for (final c in colors) GestureDetector(onTap: () => setState(() => color = c), child: Container(width: 38, height: 38, decoration: BoxDecoration(color: c, shape: BoxShape.circle, border: Border.all(color: color == c ? Colors.white : Colors.white24, width: color == c ? 3 : 1))))]),
+        ],
         const SizedBox(height: 14),
         OutlinedButton.icon(onPressed: pickPhoto, icon: const Icon(Icons.photo_library_outlined), label: Text(photo == null ? 'Pakai Foto Jadi Sticker' : 'Ganti Foto')),
         const SizedBox(height: 10),

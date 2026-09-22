@@ -107,10 +107,11 @@ class Api {
     return http.get(u, headers: {'Authorization': 'Bearer $token'});
   }
 
-  Future<Map<String, dynamic>> uploadMedia(String token, String username, File file, {String type = 'video'}) async {
+  Future<Map<String, dynamic>> uploadMedia(String token, String username, File file, {String type = 'video', String? caption}) async {
     final req = http.MultipartRequest('POST', uri('/api/chats/${Uri.encodeComponent(username)}/media'));
     req.headers['Authorization'] = 'Bearer $token';
     req.fields['type'] = type;
+    if (caption != null) req.fields['caption'] = caption;
     req.files.add(await http.MultipartFile.fromPath('file', file.path));
     final res = await req.send();
     final text = await res.stream.bytesToString();
