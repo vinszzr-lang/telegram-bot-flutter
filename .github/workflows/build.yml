@@ -38,6 +38,26 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
+      - name: Setup Gradle bootstrap tool
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.5'
+          cache-disabled: true
+
+      - name: Repair Gradle wrapper
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          # Regenerate the wrapper JAR when a Git checkout omitted it.
+          if ! test -f gradle/wrapper/gradle-wrapper.jar || ! jar tf gradle/wrapper/gradle-wrapper.jar | grep -q '^org/gradle/wrapper/GradleWrapperMain.class$'; then
+            gradle --no-daemon wrapper --gradle-version 8.14.5 --distribution-type bin
+          fi
+          test -f gradle/wrapper/gradle-wrapper.jar
+          jar tf gradle/wrapper/gradle-wrapper.jar | grep -q '^org/gradle/wrapper/GradleWrapperMain.class$'
+          chmod +x gradlew
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
