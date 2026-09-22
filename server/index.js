@@ -9,7 +9,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Server } = require('socket.io');
 
-const PORT = Number(process.env.PORT || 2667);
+const PORT = Number(process.env.PORT || 4872);
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-pterodactyl';
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://malzoffc.pterocloud.my.id:${PORT}`;
 const DATA_DIR = path.join(__dirname, 'data');

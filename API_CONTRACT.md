@@ -1,6 +1,6 @@
 # ChatWithU API Contract
 
-Base URL: `http://malzoffc.pterocloud.my.id:2667`
+Base URL: `http://malzoffc.pterocloud.my.id:4872`
 
 ## User auth
 - `POST /api/auth/register` body `{firstName,lastName,username,password}` -> `{token,user}`

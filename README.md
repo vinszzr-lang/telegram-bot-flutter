@@ -49,7 +49,7 @@ Version `1.3.0+7`.
 flutter pub get
 flutter analyze
 flutter test
-flutter build apk --release --dart-define=CHATWITHU_BASE_URL=http://malzoffc.pterocloud.my.id:2667
+flutter build apk --release --dart-define=CHATWITHU_BASE_URL=http://malzoffc.pterocloud.my.id:4872
 ```
 
 APK: `build/app/outputs/flutter-apk/app-release.apk`
@@ -66,4 +66,4 @@ The repository is intended to be uploaded with `.github/` and `pubspec.yaml` at 
 Composer sekarang punya tombol Foto langsung (gallery), Kamera, Video, dan File. Foto tidak lagi memakai file picker. Foto juga menampilkan preview sebelum dikirim.
 
 ## Admin dashboard
-Buka `/admin` pada backend, misalnya `http://HOST:2667/admin`. Login memakai `ADMIN_USERNAME` dan `ADMIN_PASSWORD` dari environment Pterodactyl. Admin dapat mengatur Verified, badges, ban/unban, dan melihat statistik user.
+Buka `/admin` pada backend, misalnya `http://HOST:4872/admin`. Login memakai `ADMIN_USERNAME` dan `ADMIN_PASSWORD` dari environment Pterodactyl. Admin dapat mengatur Verified, badges, ban/unban, dan melihat statistik user.

@@ -13,7 +13,7 @@ Environment variables:
 
 ```text
 PORT=5201
-PUBLIC_BASE_URL=http://malzoffc.pterocloud.my.id:2667
+PUBLIC_BASE_URL=http://malzoffc.pterocloud.my.id:4872
 JWT_SECRET=replace-me
 ```
 

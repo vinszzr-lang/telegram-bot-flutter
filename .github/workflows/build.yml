@@ -118,7 +118,7 @@ jobs:
           flutter build apk \
             --release \
             --split-per-abi \
-            --dart-define=CHATWITHU_BASE_URL=http://malzoffc.pterocloud.my.id:2667
+            --dart-define=CHATWITHU_BASE_URL=http://malzoffc.pterocloud.my.id:4872
 
       - name: Package artifacts
         shell: bash
