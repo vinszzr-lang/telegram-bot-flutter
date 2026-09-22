@@ -9,9 +9,9 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Server } = require('socket.io');
 
-const PORT = Number(process.env.PORT || 2667);
+const PORT = Number(process.env.PORT || 5201);
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-pterodactyl';
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://malzoffc.pterocloud.my.id:${PORT}`;
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://panelbaru2.rexzystr.my.id:${PORT}`;
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 fs.mkdirSync(DATA_DIR, { recursive: true });

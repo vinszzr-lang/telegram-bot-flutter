@@ -10,6 +10,7 @@ import 'package:saver_gallery/saver_gallery.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:video_player/video_player.dart';
 import '../services/api.dart';
 import '../services/session.dart';
 import '../services/socket_service.dart';
@@ -85,7 +86,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   void _onTyping(dynamic raw) {
     if (raw is! Map) return;
-    if (raw['from']?.toString() != username) return;
+    final from = raw['from']?.toString() ?? '';
+    // Typing is always rendered for the other participant only. Never show
+    // the current user's own typing event, even if a duplicate/echo arrives.
+    if (from.isEmpty || from == widget.session.username || from != username) return;
     final value = raw['typing'] == true;
     if (mounted && remoteTyping != value) setState(() => remoteTyping = value);
   }
@@ -554,12 +558,20 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           ),
         );
       }else{
-        body=Container(width:230,height:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(10)),child:Stack(fit:StackFit.expand,alignment:Alignment.center,children:[
-          Container(color:Colors.black45),
-          const Center(child:Icon(Icons.play_circle_fill,size:54,color:Colors.white)),
-          if(!me&&!downloaded)
-            Center(child:Material(color:Colors.black54,borderRadius:BorderRadius.circular(28),child:InkWell(borderRadius:BorderRadius.circular(28),onTap:_downloadingMedia.contains(id)?null:()=>_downloadMediaToCache(message),child:Padding(padding:const EdgeInsets.symmetric(horizontal:14,vertical:9),child:_downloadingMedia.contains(id)?const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white)):Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.download_rounded,color:Colors.white,size:21),const SizedBox(width:7),Text(size.isEmpty?'Download':size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))])))))
-        ]));
+        final videoPath = downloaded ? _downloadedMediaPaths[id] : null;
+        body=GestureDetector(
+          onTap: (downloaded || me) && videoPath != null ? () => _openVideoViewer(videoPath!, message) : null,
+          child: Container(width:230,height:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(10),color:const Color(0xFF102B24)),child:Stack(fit:StackFit.expand,alignment:Alignment.center,children:[
+            if(downloaded && videoPath != null)
+              _VideoThumbnail(path:videoPath)
+            else
+              Container(color:Colors.black45),
+            if(downloaded || me)
+              const Center(child:Icon(Icons.play_circle_fill,size:54,color:Colors.white))
+            else
+              Center(child:Material(color:Colors.black54,borderRadius:BorderRadius.circular(28),child:InkWell(borderRadius:BorderRadius.circular(28),onTap:_downloadingMedia.contains(id)?null:()=>_downloadMediaToCache(message),child:Padding(padding:const EdgeInsets.symmetric(horizontal:14,vertical:9),child:_downloadingMedia.contains(id)?const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white)):Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.download_rounded,color:Colors.white,size:21),const SizedBox(width:7),Text(size.isEmpty?'Download':size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))])))))
+          ])),
+        );
       }
     }else if(type=='file'){
       final url=(message['url']??message['mediaUrl']??'').toString();final name=(message['fileName']??message['name']??message['message']??'File').toString();body=Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.insert_drive_file_outlined,size:34),const SizedBox(width:9),Flexible(child:Text(name,maxLines:2,overflow:TextOverflow.ellipsis)),if(url.isNotEmpty)IconButton(onPressed:()=>_downloadFilePlaceholder(url),icon:const Icon(Icons.download,size:18))]);
@@ -710,6 +722,21 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     }
   }
 
+  Future<void> _openVideoViewer(String path, Map<String,dynamic> message) async {
+    if (!File(path).existsSync() || !mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => _VideoViewerPage(path: path, message: message, onSave: () => _saveMediaFileToGallery(path, message))));
+  }
+
+  Future<void> _saveMediaFileToGallery(String path, Map<String,dynamic> message) async {
+    try {
+      final name=(message['fileName']??'ChatWithU_${DateTime.now().millisecondsSinceEpoch}.${_mediaExt(message)}').toString();
+      final result=await SaverGallery.saveFile(filePath:path,fileName:name,skipIfExists:false);
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(result.isSuccess?'Tersimpan di galeri':'Gagal menyimpan')));
+    } catch(e) {
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal menyimpan: $e')));
+    }
+  }
+
   Future<void> _openImageViewer(String url, Map<String,dynamic> message, {String? localPath}) async{
     final id=(message['id']??url).toString();
     String? path=localPath??_downloadedMediaPaths[id];
@@ -742,6 +769,97 @@ class _ImageViewerPage extends StatelessWidget{
   final VoidCallback onSave;
   const _ImageViewerPage({required this.path,required this.message,required this.onSave});
   @override Widget build(BuildContext context)=>Scaffold(backgroundColor:Colors.black,appBar:AppBar(backgroundColor:Colors.black,title:const SizedBox.shrink(),actions:[IconButton(tooltip:'Simpan ke galeri',onPressed:onSave,icon:const Icon(Icons.download_rounded))]),body:Center(child:InteractiveViewer(minScale:.8,maxScale:4,child:Image.file(File(path),fit:BoxFit.contain,errorBuilder:(_,__,___)=>const Icon(Icons.broken_image,color:Colors.white,size:48)))));
+}
+
+class _VideoThumbnail extends StatefulWidget {
+  final String path;
+  const _VideoThumbnail({required this.path});
+  @override State<_VideoThumbnail> createState()=>_VideoThumbnailState();
+}
+class _VideoThumbnailState extends State<_VideoThumbnail> {
+  VideoPlayerController? controller;
+  @override void initState(){super.initState();controller=VideoPlayerController.file(File(widget.path))..initialize().then((_){if(mounted)setState((){});});}
+  @override void dispose(){controller?.dispose();super.dispose();}
+  @override Widget build(BuildContext context){final c=controller;if(c==null||!c.value.isInitialized)return Container(color:Colors.black45);return FittedBox(fit:BoxFit.cover,child:SizedBox(width:c.value.size.width,height:c.value.size.height,child:VideoPlayer(c)));}
+}
+
+class _VideoViewerPage extends StatefulWidget {
+  final String path;
+  final Map<String,dynamic> message;
+  final VoidCallback onSave;
+  const _VideoViewerPage({required this.path,required this.message,required this.onSave});
+  @override State<_VideoViewerPage> createState()=>_VideoViewerPageState();
+}
+class _VideoViewerPageState extends State<_VideoViewerPage> {
+  late final VideoPlayerController controller;
+  @override void initState(){super.initState();controller=VideoPlayerController.file(File(widget.path))..initialize().then((_){if(mounted){setState((){});controller.play();}});}
+  @override void dispose(){controller.dispose();super.dispose();}
+  @override
+  Widget build(BuildContext context) {
+    final ready = controller.value.isInitialized;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        title: const SizedBox.shrink(),
+        actions: [
+          IconButton(
+            tooltip: 'Simpan ke galeri',
+            onPressed: widget.onSave,
+            icon: const Icon(Icons.download_rounded),
+          ),
+        ],
+      ),
+      body: Center(
+        child: !ready
+            ? const CircularProgressIndicator(color: Colors.white)
+            : AspectRatio(
+                aspectRatio: controller.value.aspectRatio,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    VideoPlayer(controller),
+                    ValueListenableBuilder<VideoPlayerValue>(
+                      valueListenable: controller,
+                      builder: (context, value, child) {
+                        return AnimatedOpacity(
+                          opacity: value.isPlaying ? 0.0 : 1.0,
+                          duration: const Duration(milliseconds: 150),
+                          child: IconButton(
+                            iconSize: 64,
+                            color: Colors.white,
+                            onPressed: () {
+                              if (value.isPlaying) {
+                                controller.pause();
+                              } else {
+                                controller.play();
+                              }
+                            },
+                            icon: Icon(
+                              value.isPlaying
+                                  ? Icons.pause_circle_filled
+                                  : Icons.play_circle_fill,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      bottom: 12,
+                      child: VideoProgressIndicator(
+                        controller,
+                        allowScrubbing: true,
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+      ),
+    );
+  }
 }
 
 class _AttachmentChoice extends StatelessWidget {
