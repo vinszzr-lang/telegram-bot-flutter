@@ -1,0 +1,142 @@
+name: Build ChatWithU Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK tools
+        uses: android-actions/setup-android@v4
+        with:
+          cmdline-tools-version: '14742923'
+          packages: ''
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --version
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      - name: Setup Gradle bootstrap tool
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.5'
+          cache-disabled: true
+          validate-wrappers: false
+
+      - name: Repair Gradle wrapper
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          # Regenerate the wrapper JAR when a Git checkout omitted it.
+          if ! test -f gradle/wrapper/gradle-wrapper.jar || ! jar tf gradle/wrapper/gradle-wrapper.jar | grep -q '^org/gradle/wrapper/GradleWrapperMain.class$'; then
+            gradle --no-daemon wrapper --gradle-version 8.14.5 --distribution-type bin
+          fi
+          test -f gradle/wrapper/gradle-wrapper.jar
+          jar tf gradle/wrapper/gradle-wrapper.jar | grep -q '^org/gradle/wrapper/GradleWrapperMain.class$'
+          chmod +x gradlew
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.4'
+          channel: stable
+          cache: true
+
+      - name: Configure clean Gradle home
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "GRADLE_USER_HOME=$RUNNER_TEMP/gradle-home" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/gradle-home"
+          rm -rf "$RUNNER_TEMP/gradle-home/wrapper/dists/gradle-8.14.5-bin"
+
+      - name: Verify toolchain
+        run: |
+          set -euo pipefail
+          java -version
+          flutter --version
+          dart --version
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Test
+        run: flutter test
+
+      - name: Fix Gradle wrapper permissions
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          test -x gradlew
+
+      - name: Bootstrap Gradle 8.14.5 with clean permissions
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          chmod +x gradlew
+          ./gradlew --version
+          gradle_bin="$(find "$GRADLE_USER_HOME/wrapper/dists/gradle-8.14.5-bin" -type f -path '*/bin/gradle' -print -quit)"
+          test -n "$gradle_bin"
+          chmod +x "$gradle_bin"
+          test -x "$gradle_bin"
+          echo "Gradle executable verified: $gradle_bin"
+
+      - name: Build APK - Split ABI
+        run: |
+          set -euo pipefail
+          flutter build apk \
+            --release \
+            --split-per-abi \
+            --dart-define=CHATWITHU_BASE_URL=http://malzoffc.pterocloud.my.id:2667
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+            dist/ChatWithU-arm64-v8a.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk \
+            dist/ChatWithU-armeabi-v7a.apk
+          cp build/app/outputs/flutter-apk/app-x86_64-release.apk \
+            dist/ChatWithU-x86_64.apk
+
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatWithU-Android-Split-ABI
+          path: dist/

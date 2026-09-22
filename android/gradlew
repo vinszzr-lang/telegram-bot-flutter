@@ -1,0 +1,50 @@
+#!/bin/sh
+set -eu
+
+APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+
+if [ -n "${JAVA_HOME:-}" ]; then
+  JAVA="$JAVA_HOME/bin/java"
+else
+  JAVA="java"
+fi
+
+if ! command -v "$JAVA" >/dev/null 2>&1; then
+  echo "ERROR: JAVA_HOME is not set and no 'java' command could be found." >&2
+  exit 1
+fi
+
+run_wrapper() {
+  "$JAVA" -Dorg.gradle.appname=gradlew -classpath "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain "$@"
+}
+
+# Some CI/build hosts extract Gradle distributions without the executable bit.
+# The stock wrapper Java code then fails with EACCES before Gradle can start.
+# Run once to allow the wrapper to download/install the distribution, repair
+# executable bits if needed, then retry only when a non-executable Gradle binary
+# was actually found.
+set +e
+run_wrapper "$@"
+status=$?
+set -e
+
+if [ "$status" -ne 0 ]; then
+  GRADLE_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
+  repaired=0
+  if [ -d "$GRADLE_HOME/wrapper/dists" ]; then
+    while IFS= read -r gradle_bin; do
+      if [ -f "$gradle_bin" ] && [ ! -x "$gradle_bin" ]; then
+        chmod +x "$gradle_bin"
+        repaired=1
+      fi
+    done <<EOF
+$(find "$GRADLE_HOME/wrapper/dists" -type f -path '*/bin/gradle' -print 2>/dev/null)
+EOF
+  fi
+
+  if [ "$repaired" -eq 1 ]; then
+    exec "$JAVA" -Dorg.gradle.appname=gradlew -classpath "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain "$@"
+  fi
+fi
+
+exit "$status"
