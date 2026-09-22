@@ -13,7 +13,7 @@ class ApiException implements Exception {
 class Api {
   static const baseUrl = String.fromEnvironment(
     'CHATWITHU_BASE_URL',
-    defaultValue: 'http://malzoffc.pterocloud.my.id:4872',
+    defaultValue: 'http://cloudadp.rexzystr.my.id:5042',
   );
 
   Uri uri(String path) => Uri.parse('$baseUrl${path.startsWith('/') ? path : '/$path'}');

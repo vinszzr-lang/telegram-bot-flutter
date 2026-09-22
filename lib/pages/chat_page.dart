@@ -325,7 +325,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   Future<Directory> _stickerDirectory() async {
     final dir = await getApplicationDocumentsDirectory();
-    final safeUser = widget.session.username.replaceAll(RegExp(r'[^a-zA-Z0-9_.-]'), '_');
+    final safeUser = (widget.session.username ?? 'unknown').replaceAll(RegExp(r'[^a-zA-Z0-9_.-]'), '_');
     final out = Directory('${dir.path}/chatwithu_stickers/$safeUser');
     await out.create(recursive: true);
     return out;
