@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiException implements Exception {
   final int status;
@@ -11,29 +12,100 @@ class ApiException implements Exception {
 }
 
 class Api {
-  static const baseUrl = String.fromEnvironment(
-    'CHATWITHU_BASE_URL',
-    defaultValue: 'http://cloudadp.rexzystr.my.id:5042',
-  );
+  static const String configUrl =
+      'https://raw.githubusercontent.com/vinszzr-lang/Project-Reskin-Gue/main/server.json';
+  static const String fallbackBaseUrl =
+      String.fromEnvironment('CHATWITHU_BASE_URL', defaultValue: 'http://cloudadp.rexzystr.my.id:5042');
+  static String _baseUrl = fallbackBaseUrl;
+  static bool _configLoaded = false;
+  static bool _refreshingConfig = false;
 
-  Uri uri(String path) => Uri.parse('$baseUrl${path.startsWith('/') ? path : '/$path'}');
+  static String get baseUrl => _baseUrl;
+
+  static Future<void> initialize() async {
+    if (_configLoaded) return;
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString('chatwithu_server_url');
+    if (saved != null && saved.trim().isNotEmpty) _baseUrl = _normalizeBaseUrl(saved);
+    _configLoaded = true;
+    // Fetch the latest address once at startup. If GitHub is unavailable, keep
+    // the last known address so the app can still try the previous server.
+    await refreshServerConfig(silent: true);
+  }
+
+  static String _normalizeBaseUrl(String value) =>
+      value.trim().replaceFirst(RegExp(r'/+$'), '');
+
+  static Future<bool> refreshServerConfig({bool silent = false}) async {
+    if (_refreshingConfig) return false;
+    _refreshingConfig = true;
+    try {
+      final response = await http.get(Uri.parse(configUrl)).timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return false;
+      final data = jsonDecode(response.body);
+      if (data is! Map) return false;
+      final raw = data['server']?.toString() ?? data['api']?.toString();
+      if (raw == null || raw.trim().isEmpty) return false;
+      final next = _normalizeBaseUrl(raw);
+      final parsed = Uri.tryParse(next);
+      if (parsed == null || (parsed.scheme != 'http' && parsed.scheme != 'https') || parsed.host.isEmpty) return false;
+      _baseUrl = next;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('chatwithu_server_url', next);
+      return true;
+    } catch (_) {
+      if (!silent) return false;
+      return false;
+    } finally {
+      _refreshingConfig = false;
+    }
+  }
+
+  Uri uri(String path) => Uri.parse('$_baseUrl${path.startsWith('/') ? path : '/$path'}');
 
   Future<dynamic> request(String method, String path, {String? token, Object? body}) async {
+    await initialize();
     final headers = <String, String>{'Accept': 'application/json'};
     if (body != null) headers['Content-Type'] = 'application/json';
     if (token != null && token.isNotEmpty) headers['Authorization'] = 'Bearer $token';
-    late http.Response r;
-    final u = uri(path);
-    switch (method) {
-      case 'GET': r = await http.get(u, headers: headers); break;
-      case 'POST': r = await http.post(u, headers: headers, body: body == null ? null : jsonEncode(body)); break;
-      case 'PATCH': r = await http.patch(u, headers: headers, body: body == null ? null : jsonEncode(body)); break;
-      case 'DELETE': r = await http.delete(u, headers: headers); break;
-      default: throw ArgumentError(method);
+
+    Future<http.Response> send() async {
+      final u = uri(path);
+      switch (method) {
+        case 'GET': return http.get(u, headers: headers).timeout(const Duration(seconds: 12));
+        case 'POST': return http.post(u, headers: headers, body: body == null ? null : jsonEncode(body)).timeout(const Duration(seconds: 12));
+        case 'PATCH': return http.patch(u, headers: headers, body: body == null ? null : jsonEncode(body)).timeout(const Duration(seconds: 12));
+        case 'DELETE': return http.delete(u, headers: headers).timeout(const Duration(seconds: 12));
+        default: throw ArgumentError(method);
+      }
     }
+
+    http.Response r;
+    try {
+      r = await send();
+    } catch (_) {
+      // The current server is unreachable: check GitHub once for a new domain.
+      final changed = await refreshServerConfig();
+      if (!changed) rethrow;
+      r = await send();
+    }
+
     dynamic data;
     try { data = r.body.isEmpty ? null : jsonDecode(r.body); } catch (_) { data = r.body; }
     if (r.statusCode < 200 || r.statusCode >= 300) {
+      // Only infrastructure-style errors trigger a config refresh. Auth/validation
+      // errors must never cause the app to switch servers.
+      if (r.statusCode == 502 || r.statusCode == 503 || r.statusCode == 504) {
+        final changed = await refreshServerConfig();
+        if (changed) {
+          final retry = await send();
+          dynamic retryData;
+          try { retryData = retry.body.isEmpty ? null : jsonDecode(retry.body); } catch (_) { retryData = retry.body; }
+          if (retry.statusCode >= 200 && retry.statusCode < 300) return retryData;
+          data = retryData;
+          r = retry;
+        }
+      }
       final msg = data is Map ? (data['message'] ?? data['error'] ?? 'Request gagal') : 'Request gagal (${r.statusCode})';
       throw ApiException(r.statusCode, msg.toString());
     }

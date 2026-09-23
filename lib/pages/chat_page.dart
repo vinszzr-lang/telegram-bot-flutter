@@ -63,7 +63,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     _loadStickers();
     _connectSocket();
     load();
-    pollTimer = Timer.periodic(const Duration(seconds: 8), (_) { if (!socket.connected) syncMessages(); });
+    pollTimer = Timer.periodic(const Duration(seconds: 8), (_) { if (!socket.connected) { syncMessages().whenComplete(() { if (mounted && widget.session.token != null && !socket.connected) { _connectSocket(); } }); } });
   }
 
   void _connectSocket() {

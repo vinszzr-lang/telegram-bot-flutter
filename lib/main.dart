@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'services/session.dart';
+import 'services/api.dart';
 import 'pages/login_page.dart';
 import 'pages/home_page.dart';
 import 'utils/navigation.dart';
@@ -9,6 +10,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final session = Session();
   await session.load();
+  await Api.initialize();
   runApp(ChatWithUApp(session: session));
 }
 
