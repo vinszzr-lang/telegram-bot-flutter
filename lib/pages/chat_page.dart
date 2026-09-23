@@ -676,66 +676,85 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Widget _bubble(Map<String,dynamic> message){
     final me=(message['senderUsername']??message['sender'])==widget.session.username;
     final type=message['type']??'text';
+
+    // Foto/video dibuat sebagai satu bubble yang lebarnya mengikuti frame media.
+    // Caption dan waktu tetap berada di bawah media, bukan memperlebar bubble.
+    if(type=='image'||type=='video'){
+      final url=(message['url']??message['mediaUrl']??'').toString();
+      final id=(message['id']??url).toString();
+      final localPath=_downloadedMediaPaths[id];
+      final downloaded=localPath!=null && File(localPath).existsSync();
+      return Align(
+        alignment:me?Alignment.centerRight:Alignment.centerLeft,
+        child:_MediaMessageBubble(
+          key:ValueKey(message['id']?.toString()),
+          type:type.toString(),
+          url:url,
+          previewUrl:(message['previewUrl']??url).toString(),
+          localPath:downloaded?localPath:null,
+          downloaded:downloaded,
+          isMine:me,
+          caption:(message['caption']?.toString()??'').trim(),
+          size:_formatBytes(message['fileSize'] ?? message['size']),
+          time:_time(message['createdAt']),
+          status:message['status']?.toString()??'sent',
+          downloading:_downloadingMedia.contains(id),
+          onDownload:()=>_downloadMediaToCache(message),
+          onOpenImage:()=>_openImageViewer(url,message,localPath:downloaded?localPath:null),
+          onOpenVideo:downloaded&&localPath!=null?()=>_openVideoViewer(localPath,message):null,
+          maxWidth:math.min(300,MediaQuery.sizeOf(context).width*.76),
+          maxHeight:360,
+        ),
+      );
+    }
+
     Widget body;
-    if(type=='image'||type=='video'||type=='sticker'){
+    if(type=='sticker'){
       final url=(message['url']??message['mediaUrl']??'').toString();
       final id=(message['id']??url).toString();
       final localPath=_downloadedMediaPaths[id];
       final downloaded=localPath!=null && File(localPath).existsSync();
       final size=_formatBytes(message['fileSize'] ?? message['size']);
-      if(type=='image'||type=='sticker'){
-        final image = downloaded
-            ? Image.file(File(localPath),fit:type=='sticker'?BoxFit.contain:BoxFit.cover,errorBuilder:(_,__,___)=>const Center(child:Icon(Icons.broken_image)))
-            : ImageFiltered(imageFilter: ui.ImageFilter.blur(sigmaX: 11, sigmaY: 11),child: Image.network((message['previewUrl']??url).toString(),fit:BoxFit.cover,errorBuilder:(_,__,___)=>Container(color:Colors.black54,child:const Center(child:Icon(Icons.image_outlined,color:Colors.white54,size:42)))));
-        final sticker=type=='sticker';
-        body=GestureDetector(
-          onLongPress: sticker && !me && downloaded ? () => _favoriteIncomingSticker(message) : null,
-          onTap: sticker
-              ? (downloaded ? () => _showStickerActions(message) : null)
-              : (url.isEmpty ? null : () => downloaded || me ? _openImageViewer(url, message, localPath: downloaded ? localPath : null) : null),
-          child: Stack(alignment:Alignment.center,children:[
-            sticker
-                ? Container(width:150,height:150,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(18)),child:image)
-                : ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 300, maxHeight: 360),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: image,
-                    ),
-                  ),
-            if(!me&&!downloaded)
-              _mediaDownloadButton(message,size),
-          ]),
-        );
-      }else{
-        if(downloaded || me) {
-          final videoPath=localPath;
-          if(videoPath!=null && videoPath.isNotEmpty && File(videoPath).existsSync()) {
-            body=GestureDetector(
-              onTap: () => _openVideoViewer(videoPath, message),
-              child: _VideoBubble(path:videoPath),
-            );
-          } else {
-            body=Container(width:230,height:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(10)),child:Stack(fit:StackFit.expand,alignment:Alignment.center,children:[Container(color:Colors.black45),const Center(child:Icon(Icons.play_circle_fill,size:54,color:Colors.white))]));
-          }
-        } else {
-          body=Container(width:230,height:160,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(10)),child:Stack(fit:StackFit.expand,alignment:Alignment.center,children:[
-            Container(color:Colors.black45),
-            const Center(child:Icon(Icons.videocam_rounded,size:46,color:Colors.white54)),
-            Center(child:Material(color:Colors.black54,borderRadius:BorderRadius.circular(28),child:InkWell(borderRadius:BorderRadius.circular(28),onTap:_downloadingMedia.contains(id)?null:()=>_downloadMediaToCache(message),child:Padding(padding:const EdgeInsets.symmetric(horizontal:14,vertical:9),child:_downloadingMedia.contains(id)?const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white)):Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.download_rounded,color:Colors.white,size:21),const SizedBox(width:7),Text(size.isEmpty?'Download':size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))])))))
-          ]));
-        }
-      }
+      final image = downloaded
+          ? Image.file(File(localPath),fit:BoxFit.contain,errorBuilder:(_,__,___)=>const Center(child:Icon(Icons.broken_image)))
+          : ImageFiltered(imageFilter:ui.ImageFilter.blur(sigmaX:11,sigmaY:11),child:Image.network((message['previewUrl']??url).toString(),fit:BoxFit.cover,errorBuilder:(_,__,___)=>Container(color:Colors.black54,child:const Center(child:Icon(Icons.image_outlined,color:Colors.white54,size:42)))));
+      body=GestureDetector(
+        onLongPress:!me&&downloaded?()=>_favoriteIncomingSticker(message):null,
+        onTap:downloaded?()=>_showStickerActions(message):null,
+        child:Stack(alignment:Alignment.center,children:[
+          Container(width:150,height:150,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(18)),child:image),
+          if(!me&&!downloaded)_mediaDownloadButton(message,size),
+        ]),
+      );
     }else if(type=='file'){
-      final url=(message['url']??message['mediaUrl']??'').toString();final name=(message['fileName']??message['name']??message['message']??'File').toString();body=Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.insert_drive_file_outlined,size:34),const SizedBox(width:9),Flexible(child:Text(name,maxLines:2,overflow:TextOverflow.ellipsis)),if(url.isNotEmpty)IconButton(onPressed:()=>_downloadFilePlaceholder(url),icon:const Icon(Icons.download,size:18))]);
+      final url=(message['url']??message['mediaUrl']??'').toString();
+      final name=(message['fileName']??message['name']??message['message']??'File').toString();
+      body=Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.insert_drive_file_outlined,size:34),const SizedBox(width:9),Flexible(child:Text(name,maxLines:2,overflow:TextOverflow.ellipsis)),if(url.isNotEmpty)IconButton(onPressed:()=>_downloadFilePlaceholder(url),icon:const Icon(Icons.download,size:18))]);
     }else{
       body=Text(message['message']?.toString()??'',style:const TextStyle(fontSize:15));
     }
-    final max=MediaQuery.sizeOf(context).width*.82;final status=message['status']?.toString()??'sent';
-    final caption=(type=='image'||type=='video') ? (message['caption']?.toString()??'').trim() : '';
-    return Align(alignment:me?Alignment.centerRight:Alignment.centerLeft,child:ConstrainedBox(key:ValueKey(message['id']?.toString()),constraints:BoxConstraints(maxWidth:max),child:Container(margin:const EdgeInsets.only(bottom:5),padding:const EdgeInsets.fromLTRB(12,8,8,6),decoration:BoxDecoration(color:me?const Color(0xFF2A6B55):const Color(0xFF20282C),borderRadius:BorderRadius.circular(12)),child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.end,children:[Align(alignment:Alignment.centerLeft,widthFactor:1,child:body),if(caption.isNotEmpty) ...[const SizedBox(height:6),Align(alignment:Alignment.centerLeft,child:Text(caption,style:const TextStyle(fontSize:14)))],Row(mainAxisSize:MainAxisSize.min,children:[Text(_time(message['createdAt']),style:const TextStyle(fontSize:10,color:Colors.white54)),if(me)...[const SizedBox(width:3),_ticks(status)]])]))));
+
+    final max=MediaQuery.sizeOf(context).width*.82;
+    final status=message['status']?.toString()??'sent';
+    return Align(
+      alignment:me?Alignment.centerRight:Alignment.centerLeft,
+      child:ConstrainedBox(
+        key:ValueKey(message['id']?.toString()),
+        constraints:BoxConstraints(maxWidth:max),
+        child:Container(
+          margin:const EdgeInsets.only(bottom:5),
+          padding:const EdgeInsets.fromLTRB(12,8,8,6),
+          decoration:BoxDecoration(color:me?const Color(0xFF2A6B55):const Color(0xFF20282C),borderRadius:BorderRadius.circular(12)),
+          child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.end,children:[
+            Align(alignment:Alignment.centerLeft,widthFactor:1,child:body),
+            Row(mainAxisSize:MainAxisSize.min,children:[Text(_time(message['createdAt']),style:const TextStyle(fontSize:10,color:Colors.white54)),if(me)...[const SizedBox(width:3),_ticks(status)]])
+          ]),
+        ),
+      ),
+    );
   }
 
+  
   Widget _mediaDownloadButton(Map<String,dynamic> message, String size) { final id=(message['id']??'').toString(); return Material(color:Colors.black54,borderRadius:BorderRadius.circular(28),child:InkWell(borderRadius:BorderRadius.circular(28),onTap:_downloadingMedia.contains(id)?null:()=>_downloadMediaToCache(message),child:Padding(padding:const EdgeInsets.symmetric(horizontal:14,vertical:9),child:_downloadingMedia.contains(id)?const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white)):Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.download_rounded,color:Colors.white,size:21),const SizedBox(width:7),Text(size.isEmpty?'Download':size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))])))); }
 
   Future<void> _showStickerActions(Map<String,dynamic> message) async {
@@ -897,6 +916,193 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   Future<void> _downloadFilePlaceholder(String url) async{try{final res=await http.get(Uri.parse(url));final dir=await getApplicationDocumentsDirectory();final f=File('${dir.path}/download_${DateTime.now().millisecondsSinceEpoch}');await f.writeAsBytes(res.bodyBytes);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('File tersimpan: ${f.path}')));}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal: $e')));}}
+}
+
+
+class _MediaMessageBubble extends StatefulWidget {
+  final String type;
+  final String url;
+  final String previewUrl;
+  final String? localPath;
+  final bool downloaded;
+  final bool isMine;
+  final String caption;
+  final String size;
+  final String time;
+  final String status;
+  final bool downloading;
+  final VoidCallback onDownload;
+  final VoidCallback onOpenImage;
+  final VoidCallback? onOpenVideo;
+  final double maxWidth;
+  final double maxHeight;
+
+  const _MediaMessageBubble({
+    super.key,
+    required this.type,
+    required this.url,
+    required this.previewUrl,
+    required this.localPath,
+    required this.downloaded,
+    required this.isMine,
+    required this.caption,
+    required this.size,
+    required this.time,
+    required this.status,
+    required this.downloading,
+    required this.onDownload,
+    required this.onOpenImage,
+    required this.onOpenVideo,
+    required this.maxWidth,
+    required this.maxHeight,
+  });
+
+  @override
+  State<_MediaMessageBubble> createState()=>_MediaMessageBubbleState();
+}
+
+class _MediaMessageBubbleState extends State<_MediaMessageBubble> {
+  double _aspect=16/9;
+  VideoPlayerController? _video;
+  ImageStream? _imageStream;
+  ImageStreamListener? _imageListener;
+
+  @override
+  void initState(){
+    super.initState();
+    if(widget.type=='video'){
+      if(widget.localPath!=null) _initVideo(widget.localPath!);
+    }else{
+      _resolveImage();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _MediaMessageBubble oldWidget){
+    super.didUpdateWidget(oldWidget);
+    if(widget.type!=oldWidget.type||widget.localPath!=oldWidget.localPath||widget.previewUrl!=oldWidget.previewUrl){
+      if(widget.type=='video'){
+        _disposeVideo();
+        if(widget.localPath!=null) _initVideo(widget.localPath!);
+      }else{
+        _resolveImage();
+      }
+    }
+  }
+
+  void _resolveImage(){
+    _imageStream?.removeListener(_imageListener!);
+    final provider=widget.localPath!=null
+        ? FileImage(File(widget.localPath!))
+        : NetworkImage(widget.previewUrl);
+    final stream=provider.resolve(const ImageConfiguration());
+    final listener=ImageStreamListener((info,_) {
+      final w=info.image.width.toDouble();
+      final h=info.image.height.toDouble();
+      if(w>0&&h>0&&mounted){
+        final ratio=w/h;
+        if(ratio>0.08&&ratio<12&&ratio!=_aspect)setState(()=>_aspect=ratio);
+      }
+    });
+    _imageStream=stream;
+    _imageListener=listener;
+    stream.addListener(listener);
+  }
+
+  Future<void> _initVideo(String path) async {
+    try{
+      final c=VideoPlayerController.file(File(path));
+      _video=c;
+      await c.initialize();
+      if(!mounted){await c.dispose();return;}
+      final ratio=c.value.aspectRatio;
+      if(ratio>0) setState(()=>_aspect=ratio);
+    }catch(_){ }
+  }
+
+  void _disposeVideo(){
+    final c=_video;
+    _video=null;
+    c?.dispose();
+  }
+
+  @override
+  void dispose(){
+    if(_imageStream!=null&&_imageListener!=null)_imageStream!.removeListener(_imageListener!);
+    _disposeVideo();
+    super.dispose();
+  }
+
+  Size _frameSize(){
+    final safeAspect=(_aspect.isFinite&&_aspect>0)?_aspect:16/9;
+    var w=widget.maxWidth;
+    var h=w/safeAspect;
+    if(h>widget.maxHeight){
+      h=widget.maxHeight;
+      w=h*safeAspect;
+    }
+    return Size(w,h);
+  }
+
+  Widget _media(Size size){
+    final radius=BorderRadius.circular(10);
+    if(widget.type=='image'){
+      final image=widget.localPath!=null
+          ? Image.file(File(widget.localPath!),width:size.width,height:size.height,fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Center(child:Icon(Icons.broken_image,color:Colors.white,size:42)))
+          : Image.network(widget.previewUrl,width:size.width,height:size.height,fit:BoxFit.cover,errorBuilder:(_,__,___)=>Container(color:Colors.black45,child:const Center(child:Icon(Icons.image_outlined,color:Colors.white54,size:42))));
+      return ClipRRect(borderRadius:radius,child:GestureDetector(onTap:widget.downloaded||widget.isMine?widget.onOpenImage:null,child:Stack(fit:StackFit.expand,children:[image,if(!widget.downloaded&&!widget.isMine)Center(child:_downloadButton())])));
+    }
+
+    final c=_video;
+    if(widget.downloaded&&c!=null&&c.value.isInitialized){
+      return ClipRRect(borderRadius:radius,child:GestureDetector(onTap:widget.onOpenVideo,child:Stack(fit:StackFit.expand,children:[
+        VideoPlayer(c),
+        Container(color:Colors.black26),
+        const Center(child:DecoratedBox(decoration:BoxDecoration(color:Colors.white,shape:BoxShape.circle),child:Padding(padding:EdgeInsets.all(10),child:Icon(Icons.play_arrow_rounded,color:Colors.black,size:34)))),
+        Positioned(left:8,right:8,bottom:7,child:VideoProgressIndicator(c,allowScrubbing:false,padding:EdgeInsets.zero,colors:const VideoProgressColors(playedColor:Colors.white,bufferedColor:Colors.white54,backgroundColor:Colors.white24))),
+      ])));
+    }
+
+    return ClipRRect(borderRadius:radius,child:Stack(fit:StackFit.expand,children:[
+      Container(color:Colors.black45),
+      const Center(child:Icon(Icons.videocam_rounded,size:46,color:Colors.white54)),
+      if(!widget.downloaded&&!widget.isMine)Center(child:_downloadButton()),
+    ]));
+  }
+
+  Widget _downloadButton(){
+    return Material(color:Colors.black54,borderRadius:BorderRadius.circular(28),child:InkWell(borderRadius:BorderRadius.circular(28),onTap:widget.downloading?null:widget.onDownload,child:Padding(padding:const EdgeInsets.symmetric(horizontal:14,vertical:9),child:widget.downloading
+      ? const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white))
+      : Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.download_rounded,color:Colors.white,size:21),const SizedBox(width:7),Text(widget.size.isEmpty?'Download':widget.size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))]))));
+  }
+
+  @override
+  Widget build(BuildContext context){
+    final size=_frameSize();
+    final bg=widget.isMine?const Color(0xFF2A6B55):const Color(0xFF20282C);
+    return Container(
+      margin:const EdgeInsets.only(bottom:5),
+      width:size.width,
+      decoration:BoxDecoration(color:bg,borderRadius:BorderRadius.circular(12)),
+      clipBehavior:Clip.antiAlias,
+      child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.stretch,children:[
+        SizedBox(width:size.width,height:size.height,child:_media(size)),
+        if(widget.caption.isNotEmpty)
+          Padding(padding:const EdgeInsets.fromLTRB(10,8,10,2),child:Text(widget.caption,style:const TextStyle(fontSize:14),softWrap:true)),
+        Padding(padding:const EdgeInsets.fromLTRB(8,2,8,6),child:Row(mainAxisAlignment:MainAxisAlignment.end,children:[Text(widget.time,style:const TextStyle(fontSize:10,color:Colors.white54)),if(widget.isMine)...[const SizedBox(width:3),_ticks(widget.status)]])),
+      ]),
+    );
+  }
+
+  Widget _ticks(String status){
+    IconData icon=Icons.check;
+    Color color=Colors.white54;
+    if(status=='failed'){icon=Icons.close;color=Colors.redAccent;}
+    else if(status=='read'){icon=Icons.done_all;color=const Color(0xFF53BDEB);}
+    else if(status=='sent'||status=='delivered'){icon=Icons.done_all;}
+    else if(status=='sending')return const SizedBox(width:15,height:15,child:Padding(padding:EdgeInsets.all(2),child:CircularProgressIndicator(strokeWidth:1.6)));
+    return Icon(icon,color:color,size:15);
+  }
 }
 
 
