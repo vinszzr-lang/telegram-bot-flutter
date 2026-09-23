@@ -2,9 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:saver_gallery/saver_gallery.dart';
 import 'package:image_picker/image_picker.dart';
@@ -50,6 +50,9 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   final Set<String> _downloadingMedia = <String>{};
   final List<String> _stickers = <String>[];
   bool _showStickerTray = false;
+  final Set<String> _selectedIds = <String>{};
+  Map<String,dynamic>? _replyingTo;
+  bool get _isSavedContact => widget.contact['saved'] == true;
 
   @override
   void initState() {
@@ -73,6 +76,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     socket.on('message:new', _onSocketMessage);
     socket.on('typing', _onTyping);
     socket.on('message:read', _onRead);
+    socket.on('message:updated', _onMessageUpdated);
     socket.on('profile:updated', _onProfileUpdated);
   }
 
@@ -123,6 +127,16 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       LocalCache.saveMessages(username, messages);
       if (mounted) setState(() {});
     }
+  }
+
+  void _onMessageUpdated(dynamic raw) {
+    if (raw is! Map) return;
+    final m = Map<String,dynamic>.from(raw);
+    final id = m['id']?.toString();
+    if (id == null) return;
+    _mergeMessages([m]);
+    LocalCache.saveMessages(username, messages);
+    if (mounted) setState(() {});
   }
 
   void _onProfileUpdated(dynamic raw) {
@@ -260,20 +274,24 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     typingStopTimer?.cancel();
     socket.emit('typing:stop', {'to': username});
     if (mounted) setState(() => remoteTyping = false);
-    final temp = {'id':'local-${DateTime.now().microsecondsSinceEpoch}','type':'text','message':text,'senderUsername':widget.session.username,'recipientUsername':username,'status':'sending','createdAt':DateTime.now().toUtc().toIso8601String()};
-    messages = [...messages, temp]; if (mounted) setState(() {}); _bottom();
+    final replyId = _replyingTo?['id']?.toString();
+    final oldReply = _replyingTo;
+    setState(() => _replyingTo = null);
     try {
-      final result = await api.sendMessage(widget.session.token!, username, text);
+      // No optimistic local row: the server socket echo and HTTP response use
+      // the same message id, so the merge layer can never show it twice.
+      final clientMessageId = 'chat-${DateTime.now().microsecondsSinceEpoch}-${text.hashCode.abs()}';
+      final result = await api.sendMessage(widget.session.token!, username, text, replyToId: replyId, clientMessageId: clientMessageId);
       _mergeMessages([result]);
       await LocalCache.saveMessages(username, messages);
       if (mounted) setState(() {}); _bottom();
     } on ApiException catch (e) {
       if (e.status == 403) return _showBanned();
-      _markFailed(temp['id'].toString());
-    } catch (_) { _markFailed(temp['id'].toString()); }
+      if (mounted) { setState(() => _replyingTo = oldReply); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message))); }
+    } catch (e) {
+      if (mounted) { setState(() => _replyingTo = oldReply); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal mengirim: $e'))); }
+    }
   }
-
-  void _markFailed(String id) { final i=messages.indexWhere((m)=>m['id']?.toString()==id); if(i>=0){messages[i]={...messages[i],'status':'failed'};if(mounted)setState((){});} }
 
   Future<void> _sendPickedMedia(XFile picked, {required String type}) async {
     final file = File(picked.path);
@@ -298,8 +316,11 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         file,
         type: type,
         caption: caption,
+        replyToId: _replyingTo?['id']?.toString(),
+         clientMessageId: 'media-${DateTime.now().microsecondsSinceEpoch}-${fileName.hashCode.abs()}',
       );
       _mergeMessages([result]);
+      _replyingTo = null;
       // Keep the sender's own copy on-device. The server copy is only a relay
       // and may be deleted as soon as the recipient successfully downloads it.
       final local = await _localMediaFile(Map<String,dynamic>.from(result));
@@ -444,8 +465,9 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       if (!await file.exists()) return;
       if (!mounted) return;
       setState(() => sendingMedia = true);
-      final result = await api.uploadMedia(widget.session.token!, username, file, type: 'sticker');
+      final result = await api.uploadMedia(widget.session.token!, username, file, type: 'sticker', replyToId: _replyingTo?['id']?.toString(), clientMessageId: 'sticker-${DateTime.now().microsecondsSinceEpoch}-${path.hashCode.abs()}');
       _mergeMessages([result]);
+      _replyingTo = null;
       final local = await _localMediaFile(Map<String, dynamic>.from(result));
       await local.parent.create(recursive: true);
       await file.copy(local.path);
@@ -541,7 +563,28 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     if (choice == 'file') return _pickDocument();
   }
 
+  Future<void> _addUnknownContact() async {
+    final c = TextEditingController(text: contactName);
+    final value = await showDialog<String>(context: context, builder: (_) => AlertDialog(title: const Text('Tambah kontak'), content: TextField(controller: c, autofocus: true, decoration: const InputDecoration(labelText: 'Nama kontak')), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Batal')), FilledButton(onPressed: () => Navigator.pop(context, c.text.trim()), child: const Text('Simpan'))]));
+    c.dispose();
+    if (value == null || value.isEmpty) return;
+    try { await api.addContact(widget.session.token!, username, value); widget.contact['saved'] = true; widget.contact['name'] = value; if (mounted) setState(() => contactName = value); } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e'))); }
+  }
+
+  Future<void> _blockUnknown() async {
+    try { await api.blockUser(widget.session.token!, username); if (mounted) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Kontak diblokir'))); Navigator.pop(context, true); } } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e'))); }
+  }
+
+  void _startReply(Map<String,dynamic> m) { setState(() => _replyingTo = m); }
+  void _toggleSelect(Map<String,dynamic> m) { final id=m['id']?.toString(); if (id == null) return; setState(() { if (_selectedIds.contains(id)) { _selectedIds.remove(id); } else { _selectedIds.add(id); } }); }
+  void _longSelect(Map<String,dynamic> m) { if(_selectedIds.isEmpty){_hapticLongPress();final id=m['id']?.toString();if(id!=null)setState(()=>_selectedIds.add(id));}else{_toggleSelect(m);} }
+  void _hapticLongPress() { const MethodChannel('xchat/notifications').invokeMethod('vibrate500').catchError((_) => null); }
+  Future<void> _copySelected() async { final texts=messages.where((m)=>_selectedIds.contains(m['id']?.toString())&&m['type']=='text'&&m['deleted']!=true).map((m)=>m['message']?.toString()??'').where((x)=>x.isNotEmpty).toList(); if(texts.isEmpty)return; await Clipboard.setData(ClipboardData(text:texts.join('\n'))); if(mounted){setState(()=>_selectedIds.clear());ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Pesan disalin')));} }
+  Future<void> _deleteSelected() async { final ids=_selectedIds.toList(); for(final id in ids){final m=messages.firstWhere((x)=>x['id']?.toString()==id,orElse:()=>{});if(m.isEmpty||m['senderUsername']?.toString()!=widget.session.username)continue;try{await api.deleteChatMessage(widget.session.token!,username,id);}catch(_){}} _selectedIds.clear(); await syncMessages(full:true); if(mounted)setState((){}); }
+  Widget _quotedMessage(Map<String,dynamic>? m){if(m==null)return const SizedBox.shrink();final type=m['type']?.toString()??'text';final text=type=='text'?(m['message']??'').toString():type=='image'?'Foto':type=='video'?'Video':type=='sticker'?'Sticker':type=='file'?'File':'Pesan';final sender=m['senderUsername']?.toString()==widget.session.username?'Anda':contactName;return Container(width:double.infinity,margin:const EdgeInsets.only(bottom:6),padding:const EdgeInsets.fromLTRB(9,6,8,6),decoration:BoxDecoration(color:Colors.black.withValues(alpha: .16),borderRadius:BorderRadius.circular(8),border:const Border(left:BorderSide(color:Color(0xFF58D68D),width:3))),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text(sender,style:const TextStyle(color:Color(0xFF62D696),fontWeight:FontWeight.w800,fontSize:12)),Text(text,maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(color:Colors.white70,fontSize:12))]));}
+
   Future<void> _rename() async {
+    if (!_isSavedContact) { await _addUnknownContact(); return; }
     final c=TextEditingController(text:contactName);
     final value=await showDialog<String>(context:context,builder:(_)=>AlertDialog(title:const Text('Ganti nama kontak'),content:TextField(controller:c,autofocus:true,decoration:const InputDecoration(hintText:'Nama kontak')),actions:[TextButton(onPressed:()=>Navigator.pop(context),child:const Text('Batal')),FilledButton(onPressed:()=>Navigator.pop(context,c.text.trim()),child:const Text('Simpan'))]));
     c.dispose(); if(value==null||value.isEmpty)return;
@@ -599,7 +642,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       resizeToAvoidBottomInset: false,
       appBar: AppBar(
         backgroundColor: const Color(0xFF10171A),
-        title: InkWell(
+        title: _selectedIds.isNotEmpty ? Text('${_selectedIds.length} dipilih', style: const TextStyle(fontSize:18,fontWeight:FontWeight.w800)) : InkWell(
           borderRadius: BorderRadius.circular(18),
           onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ContactProfilePage(session: widget.session, user: widget.contact))),
           child: Row(
@@ -633,7 +676,11 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           ],
         ),
         ),
-        actions: [
+        actions: _selectedIds.isNotEmpty ? [
+          if (messages.any((m)=>_selectedIds.contains(m['id']?.toString())&&m['type']=='text')) IconButton(onPressed:_copySelected,icon:const Icon(Icons.copy_outlined)),
+          IconButton(onPressed:_deleteSelected,icon:const Icon(Icons.delete_outline)),
+          IconButton(onPressed:()=>setState(()=>_selectedIds.clear()),icon:const Icon(Icons.close)),
+        ] : [
           PopupMenuButton<String>(
             onSelected: (v) {
               switch (v) {
@@ -642,20 +689,25 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
                 case 'clear': _clearChat(); break;
                 case 'search': _searchChat(); break;
                 case 'theme': _theme(); break;
+                case 'add': _addUnknownContact(); break;
+                case 'block': _blockUnknown(); break;
               }
             },
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'search', child: Text('Cari')),
-              PopupMenuItem(value: 'media', child: Text('Media, tautan, dan dok')),
-              PopupMenuItem(value: 'rename', child: Text('Ganti nama kontak')),
-              PopupMenuItem(value: 'clear', child: Text('Bersihkan chat')),
-              PopupMenuItem(value: 'theme', child: Text('Tema obrolan')),
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'search', child: Text('Cari')),
+              const PopupMenuItem(value: 'media', child: Text('Media, tautan, dan dok')),
+              if (_isSavedContact) const PopupMenuItem(value: 'rename', child: Text('Ganti nama kontak')),
+              if (!_isSavedContact) const PopupMenuItem(value: 'add', child: Text('Tambah kontak')),
+              if (!_isSavedContact) const PopupMenuItem(value: 'block', child: Text('Blokir')),
+              const PopupMenuItem(value: 'clear', child: Text('Bersihkan chat')),
+              const PopupMenuItem(value: 'theme', child: Text('Tema obrolan')),
             ],
           ),
         ],
       ),
-      body: Stack(
-        children: [
+      body: Column(children: [
+        if (!_isSavedContact) Container(color: const Color(0xFF182329), padding: const EdgeInsets.fromLTRB(12, 8, 8, 8), child: Row(children: [const Expanded(child: Text('Anda belum menyimpan kontak ini', style: TextStyle(color: Colors.white70, fontSize: 12))), TextButton(onPressed: _blockUnknown, child: const Text('Blokir')), FilledButton(onPressed: _addUnknownContact, child: const Text('Tambah'))])),
+        Expanded(child: Stack(children: [
           Positioned.fill(child: _wallpaper()),
           Positioned.fill(child: Container(color: const Color(0xB9080D10))),
           Positioned.fill(
@@ -676,8 +728,8 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
             ),
           ),
           Positioned(left: 0, right: 0, bottom: keyboard, child: SafeArea(bottom: true, top: false, child: _composer())),
-        ],
-      ),
+        ],)),
+      ]),
     );
   }
 
@@ -689,6 +741,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Widget _bubble(Map<String,dynamic> message){
     final me=(message['senderUsername']??message['sender'])==widget.session.username;
     final type=message['type']??'text';
+    final deleted=message['deleted']==true;
+    if(deleted){
+      return _interactive(message,Align(alignment:me?Alignment.centerRight:Alignment.centerLeft,child:Container(margin:const EdgeInsets.only(bottom:5),padding:const EdgeInsets.fromLTRB(12,9,12,9),decoration:BoxDecoration(color:const Color(0xFF20282C),borderRadius:BorderRadius.circular(12)),child:const Row(mainAxisSize:MainAxisSize.min,children:[Icon(Icons.block_rounded,size:15,color:Colors.white38),SizedBox(width:5),Text('Pesan ini telah dihapus',style:TextStyle(color:Colors.white38,fontStyle:FontStyle.italic))]))));
+    }
 
     // Foto/video dibuat sebagai satu bubble yang lebarnya mengikuti frame media.
     // Caption dan waktu tetap berada di bawah media, bukan memperlebar bubble.
@@ -697,9 +753,11 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       final id=(message['id']??url).toString();
       final localPath=_downloadedMediaPaths[id];
       final downloaded=localPath!=null && File(localPath).existsSync();
-      return Align(
+      return _interactive(message, Align(
         alignment:me?Alignment.centerRight:Alignment.centerLeft,
-        child:_MediaMessageBubble(
+        child:Column(crossAxisAlignment:me?CrossAxisAlignment.end:CrossAxisAlignment.start,children:[
+          if(message['replyTo'] is Map) _quotedMessage(Map<String,dynamic>.from(message['replyTo'])),
+          _MediaMessageBubble(
           key:ValueKey(message['id']?.toString()),
           type:type.toString(),
           url:url,
@@ -717,8 +775,9 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           onOpenVideo:downloaded?()=>_openVideoViewer(localPath,message):null,
           maxWidth:math.min(330,MediaQuery.sizeOf(context).width*.80),
           maxHeight:450,
-        ),
-      );
+          ),
+        ]),
+      ));
     }
 
     Widget body;
@@ -749,7 +808,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
     final max=MediaQuery.sizeOf(context).width*.82;
     final status=message['status']?.toString()??'sent';
-    return Align(
+    return _interactive(message, Align(
       alignment:me?Alignment.centerRight:Alignment.centerLeft,
       child:ConstrainedBox(
         key:ValueKey(message['id']?.toString()),
@@ -759,15 +818,31 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           padding:const EdgeInsets.fromLTRB(12,8,8,6),
           decoration:BoxDecoration(color:me?const Color(0xFF2A6B55):const Color(0xFF20282C),borderRadius:BorderRadius.circular(12)),
           child:Column(mainAxisSize:MainAxisSize.min,crossAxisAlignment:CrossAxisAlignment.end,children:[
+            if(message['replyTo'] is Map) _quotedMessage(Map<String,dynamic>.from(message['replyTo'])),
             Align(alignment:Alignment.centerLeft,widthFactor:1,child:body),
             Row(mainAxisSize:MainAxisSize.min,children:[Text(_time(message['createdAt']),style:const TextStyle(fontSize:10,color:Colors.white54)),if(me)...[const SizedBox(width:3),_ticks(status)]])
           ]),
         ),
       ),
+    ));
+  }
+
+  Widget _interactive(Map<String,dynamic> message, Widget child) {
+    final id=message['id']?.toString()??'';
+    final active=_selectedIds.contains(id);
+    final content = active
+        ? Container(decoration:BoxDecoration(color:const Color(0x443EA6FF),borderRadius:BorderRadius.circular(14)),child:child)
+        : child;
+    return _SwipeReply(
+      offset: _swipeOffsets[id] ?? 0,
+      onOffsetChanged: (v) => setState(() => _swipeOffsets[id] = v),
+      onReply: () => _startReply(message),
+      onLongPress: () => _longSelect(message),
+      onTap: _selectedIds.isNotEmpty ? () => _toggleSelect(message) : null,
+      child: content,
     );
   }
 
-  
   Widget _mediaDownloadButton(Map<String,dynamic> message, String size) { final id=(message['id']??'').toString(); return Material(color:Colors.black54,borderRadius:BorderRadius.circular(28),child:InkWell(borderRadius:BorderRadius.circular(28),onTap:_downloadingMedia.contains(id)?null:()=>_downloadMediaToCache(message),child:Padding(padding:const EdgeInsets.symmetric(horizontal:14,vertical:9),child:_downloadingMedia.contains(id)?const SizedBox(width:22,height:22,child:CircularProgressIndicator(strokeWidth:2.2,color:Colors.white)):Row(mainAxisSize:MainAxisSize.min,children:[const Icon(Icons.download_rounded,color:Colors.white,size:21),const SizedBox(width:7),Text(size.isEmpty?'Download':size,style:const TextStyle(color:Colors.white,fontWeight:FontWeight.w700))])))); }
 
   Future<void> _showStickerActions(Map<String,dynamic> message) async {
@@ -804,6 +879,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
   String _time(dynamic v){final d=DateTime.tryParse(v?.toString()??'')?.toLocal();if(d==null)return'';return'${d.hour.toString().padLeft(2,'0')}:${d.minute.toString().padLeft(2,'0')}';}
   Widget _composer() => Column(mainAxisSize:MainAxisSize.min,children:[
+    if(_replyingTo!=null) Container(color:const Color(0xFF121B1E),padding:const EdgeInsets.fromLTRB(12,8,8,8),child:Row(children:[Expanded(child:_quotedMessage(_replyingTo)),IconButton(onPressed:()=>setState(()=>_replyingTo=null),icon:const Icon(Icons.close))])),
     if(_showStickerTray) _stickerTray(),
     Container(decoration:const BoxDecoration(color:Color(0xFF10171A),border:Border(top:BorderSide(color:Colors.white10))),padding:const EdgeInsets.fromLTRB(8,8,8,10),child:Row(crossAxisAlignment:CrossAxisAlignment.end,children:[
       IconButton(tooltip:'Sticker',onPressed:sendingMedia?null:()async{if(_stickers.isEmpty){await _createSticker();if(mounted&&_stickers.isNotEmpty)setState(()=>_showStickerTray=true);return;}if(mounted)setState(()=>_showStickerTray=!_showStickerTray);},icon:const Icon(Icons.sticky_note_2_outlined)),
@@ -1572,5 +1648,37 @@ class _StickerMakerSheetState extends State<_StickerMakerSheet> {
         FilledButton.icon(onPressed: (photo == null && text.text.trim().isEmpty) ? null : () => Navigator.pop(context, {'text': text.text.trim(), 'color': color, 'photo': photo}), icon: const Icon(Icons.check_circle_outline), label: const Text('Simpan Sticker')),
       ])),
     ));
+  }
+}
+
+class _SwipeReply extends StatefulWidget {
+  final double offset;
+  final ValueChanged<double> onOffsetChanged;
+  final VoidCallback onReply;
+  final VoidCallback onLongPress;
+  final VoidCallback? onTap;
+  final Widget child;
+  const _SwipeReply({required this.offset, required this.onOffsetChanged, required this.onReply, required this.onLongPress, required this.onTap, required this.child});
+  @override State<_SwipeReply> createState() => _SwipeReplyState();
+}
+class _SwipeReplyState extends State<_SwipeReply> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  double _drag = 0;
+  @override void initState(){super.initState();_controller=AnimationController(vsync:this,duration:const Duration(milliseconds:180));}
+  @override void dispose(){_controller.dispose();super.dispose();}
+  void _snapBack(){final start=_drag;_controller..reset()..addListener((){widget.onOffsetChanged(start*(1-_controller.value));})..forward();}
+  @override Widget build(BuildContext context){
+    final shown=_drag>0?_drag:widget.offset;
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onLongPress: widget.onLongPress,
+      onTap: widget.onTap,
+      onHorizontalDragUpdate:(d){if(d.delta.dx<=0 && _drag<=0)return;_drag=(_drag+d.delta.dx).clamp(0.0,96.0);widget.onOffsetChanged(_drag);},
+      onHorizontalDragEnd:(_){if(_drag>=64)widget.onReply();_snapBack();},
+      child: Stack(children:[
+        Positioned.fill(child:Align(alignment:Alignment.centerLeft,child:Opacity(opacity:(shown/64).clamp(0.0,1.0),child:const Padding(padding:EdgeInsets.only(left:8),child:Icon(Icons.reply_rounded,color:Color(0xFF62D696),size:22))))),
+        Transform.translate(offset:Offset(shown,0),child:widget.child),
+      ]),
+    );
   }
 }

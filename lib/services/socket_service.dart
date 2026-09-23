@@ -22,7 +22,7 @@ class SocketService {
     _socket!.connect();
   }
 
-  void on(String event, Function(dynamic) handler) => _socket?.on(event, handler);
+  void on(String event, Function(dynamic) handler) { _socket?.off(event, handler); _socket?.on(event, handler); }
   void off(String event, [Function(dynamic)? handler]) => _socket?.off(event, handler);
   void emit(String event, [dynamic data]) => _socket?.emit(event, data);
 

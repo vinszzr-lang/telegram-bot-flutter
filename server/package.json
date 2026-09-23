@@ -1,8 +1,8 @@
 {
   "name": "chatwithu-server",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "private": true,
-  "description": "Full ChatWithU Node.js + Express + Socket.IO backend with animated Pterodactyl admin command center",
+  "description": "Full ChatWithU Node.js + Express + Socket.IO backend with Pro Command Center, idempotent messaging, reactions, pins, polls and media",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"

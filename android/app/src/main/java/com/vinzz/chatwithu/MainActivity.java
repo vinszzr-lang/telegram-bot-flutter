@@ -6,6 +6,8 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Intent;
 import android.os.Build;
+import android.os.Vibrator;
+import android.os.VibrationEffect;
 import io.flutter.embedding.android.FlutterActivity;
 import io.flutter.embedding.engine.FlutterEngine;
 import io.flutter.plugin.common.MethodChannel;
@@ -21,6 +23,7 @@ public class MainActivity extends FlutterActivity {
         new MethodChannel(flutterEngine.getDartExecutor().getBinaryMessenger(), CHANNEL)
             .setMethodCallHandler((call, result) -> {
                 if ("init".equals(call.method)) { createChannel(); result.success(null); return; }
+                if ("vibrate500".equals(call.method)) { vibrate500(); result.success(null); return; }
                 if ("show".equals(call.method)) {
                     createChannel();
                     String title = call.argument("title");
@@ -31,6 +34,16 @@ public class MainActivity extends FlutterActivity {
                 }
                 result.notImplemented();
             });
+    }
+
+    private void vibrate500() {
+        Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE));
+        } else {
+            vibrator.vibrate(500);
+        }
     }
 
     private void createChannel() {
