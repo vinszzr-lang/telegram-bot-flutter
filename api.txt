@@ -167,14 +167,13 @@ class Api {
     return List<dynamic>.from(await request('GET', '/api/groups/${Uri.encodeComponent(groupId)}/messages$query', token: token));
   }
 
-  Future<Map<String, dynamic>> sendGroupMessage(String token, String groupId, String message, {String? replyToId}) async => Map<String, dynamic>.from(await request('POST', '/api/groups/${Uri.encodeComponent(groupId)}/messages', token: token, body: {'message': message, if (replyToId != null) 'replyToId': replyToId}));
+  Future<Map<String, dynamic>> sendGroupMessage(String token, String groupId, String message) async => Map<String, dynamic>.from(await request('POST', '/api/groups/${Uri.encodeComponent(groupId)}/messages', token: token, body: {'message': message}));
 
-  Future<Map<String, dynamic>> uploadGroupMedia(String token, String groupId, File file, {String type = 'image', String? caption, String? replyToId}) async {
+  Future<Map<String, dynamic>> uploadGroupMedia(String token, String groupId, File file, {String type = 'image', String? caption}) async {
     final req = http.MultipartRequest('POST', uri('/api/groups/${Uri.encodeComponent(groupId)}/media'));
     req.headers['Authorization'] = 'Bearer $token';
     req.fields['type'] = type;
     if (caption != null) req.fields['caption'] = caption;
-    if (replyToId != null) req.fields['replyToId'] = replyToId;
     req.files.add(await http.MultipartFile.fromPath('file', file.path));
     final res = await req.send();
     final text = await res.stream.bytesToString();
@@ -219,41 +218,3 @@ class Api {
   Future<void> clearChat(String token, String username) async =>
       await request('POST', '/api/chats/${Uri.encodeComponent(username)}/clear', token: token);
 
-  Future<List<dynamic>> searchMessages(String token, String username, String q) async =>
-      List<dynamic>.from(await request('GET', '/api/chats/${Uri.encodeComponent(username)}/search?q=${Uri.encodeQueryComponent(q)}', token: token));
-
-  Future<Map<String, dynamic>> chatMedia(String token, String username) async =>
-      Map<String, dynamic>.from(await request('GET', '/api/chats/${Uri.encodeComponent(username)}/media', token: token));
-
-  Future<Map<String, dynamic>> sendMessage(String token, String username, String message, {String? replyToId}) async =>
-      Map<String, dynamic>.from(await request('POST', '/api/chats/${Uri.encodeComponent(username)}/messages', token: token, body: {'type': 'text', 'message': message, if (replyToId != null) 'replyToId': replyToId}));
-
-  Future<http.Response> downloadMedia(String token, String messageId) async {
-    final u = uri('/api/media/${Uri.encodeComponent(messageId)}/download');
-    return http.get(u, headers: {'Authorization': 'Bearer $token'});
-  }
-
-  Future<Map<String, dynamic>> uploadMedia(String token, String username, File file, {String type = 'video', String? caption, String? replyToId}) async {
-    final req = http.MultipartRequest('POST', uri('/api/chats/${Uri.encodeComponent(username)}/media'));
-    req.headers['Authorization'] = 'Bearer $token';
-    req.fields['type'] = type;
-    if (caption != null) req.fields['caption'] = caption;
-    if (replyToId != null) req.fields['replyToId'] = replyToId;
-    req.files.add(await http.MultipartFile.fromPath('file', file.path));
-    final res = await req.send();
-    final text = await res.stream.bytesToString();
-    dynamic data;
-    try { data = jsonDecode(text); } catch (_) { data = {'message': text}; }
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw ApiException(res.statusCode, (data is Map ? (data['message'] ?? 'Upload gagal') : 'Upload gagal').toString());
-    }
-    return Map<String, dynamic>.from(data as Map);
-  }
-  Future<Map<String,dynamic>> blockUser(String token, String username) async => Map<String,dynamic>.from(await request('POST','/api/blocks/${Uri.encodeComponent(username)}',token:token));
-  Future<Map<String,dynamic>> unblockUser(String token, String username) async => Map<String,dynamic>.from(await request('DELETE','/api/blocks/${Uri.encodeComponent(username)}',token:token));
-  Future<Map<String,dynamic>> deleteChatMessage(String token,String username,String messageId) async => Map<String,dynamic>.from(await request('DELETE','/api/chats/${Uri.encodeComponent(username)}/messages/${Uri.encodeComponent(messageId)}',token:token));
-  Future<Map<String,dynamic>> deleteGroupMessage(String token,String groupId,String messageId) async => Map<String,dynamic>.from(await request('DELETE','/api/groups/${Uri.encodeComponent(groupId)}/messages/${Uri.encodeComponent(messageId)}',token:token));
-  Future<Map<String,dynamic>> createGroupPoll(String token,String groupId,String question,List<String> options) async => Map<String,dynamic>.from(await request('POST','/api/groups/${Uri.encodeComponent(groupId)}/polls',token:token,body:{'question':question,'options':options}));
-  Future<Map<String,dynamic>> voteGroupPoll(String token,String groupId,String messageId,String optionId) async => Map<String,dynamic>.from(await request('POST','/api/groups/${Uri.encodeComponent(groupId)}/polls/${Uri.encodeComponent(messageId)}/vote',token:token,body:{'optionId':optionId}));
-
-}
