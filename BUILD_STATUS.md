@@ -1,11 +1,9 @@
-# Build Status
+# X Chat Build Notes
 
-## 2.1.0+9
-- Fixed duplicate outgoing messages by removing optimistic message insertion and de-duplicating by server message ID.
-- Restored static blue verified badge without shimmer.
-- Added reply-by-swipe, reply previews, long-press multi-select, text copy, and sender-owned message deletion.
-- Added unknown-contact banner with Block / Add Contact actions.
-- Group chat now supports photo, video, sticker, file, replies, multi-select, copy/delete, and polling.
-- Group polls support a title, dynamic options, one vote per account, confirmation, counts and percentages.
-- Read receipts now emit exact message IDs.
-- Added block and message deletion APIs.
+- App label: X Chat
+- Version: 2.0.0+8
+- GitHub server bootstrap remains at the existing `server.json` URL in `lib/services/api.dart`.
+- The app stores the last known server locally and refreshes GitHub only at startup or after infrastructure/network failure.
+- Group chat, group media, profiles, verified badge animation, notification permission, and native local notifications were added.
+- Local Flutter SDK was not available in this environment, so a real `flutter analyze` / `flutter build apk` run could not be performed here.
+- Server JavaScript syntax was verified with `node --check`.

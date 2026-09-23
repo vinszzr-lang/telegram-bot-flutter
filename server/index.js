@@ -38,7 +38,7 @@ const initial = {
     maxUploadMb: 50,
     announcement: ''
   },
-  users: [], contacts: [], blocks: [], messages: [], hidden: [], admins: [], activity: [], groups: [], groupMembers: [], reactions: [], pinned: [], idempotency: []
+  users: [], contacts: [], messages: [], hidden: [], admins: [], activity: [], groups: [], groupMembers: []
 };
 if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2));
 let db;
@@ -75,44 +75,6 @@ function backupDb() {
 function id() { return crypto.randomUUID(); }
 function now() { return new Date().toISOString(); }
 function cleanText(v, max=120) { return String(v ?? '').trim().slice(0, max); }
-function cleanId(v, max=120) { return String(v ?? '').trim().slice(0, max); }
-function findMessage(messageId) { return db.messages.find(m => m.id === String(messageId)); }
-function idempotentKey(owner, key) { return `${String(owner).toLowerCase()}:${String(key)}`; }
-function findIdempotent(owner, key) { if (!key) return null; return db.idempotency.find(x => x.key === idempotentKey(owner,key)) || null; }
-function rememberIdempotent(owner, key, messageId) {
-  if (!key) return;
-  db.idempotency.push({ key:idempotentKey(owner,key), owner:String(owner).toLowerCase(), messageId, createdAt:now() });
-  if (db.idempotency.length > 5000) db.idempotency = db.idempotency.slice(-5000);
-}
-function publicReplyFor(m) {
-  if (!m?.replyTo) return null;
-  return { id:m.replyTo.id, type:m.replyTo.type, message:m.replyTo.message || '', caption:m.replyTo.caption || '', senderUsername:m.replyTo.senderUsername, fileName:m.replyTo.fileName || '', url:m.replyTo.url || '', mediaUrl:m.replyTo.mediaUrl || '' };
-}
-function decorateMessage(m, req, viewer) {
-  const out = messageOut(m, req);
-  out.replyTo = publicReplyFor(m);
-  out.reactions = (db.reactions || []).filter(r => r.messageId === m.id).reduce((acc,r)=>{acc[r.emoji]=(acc[r.emoji]||0)+1;return acc;},{});
-  out.myReactions = (db.reactions || []).filter(r => r.messageId === m.id && r.username === String(viewer||'').toLowerCase()).map(r=>r.emoji);
-  out.pinned = (db.pinned || []).some(p => p.messageId === m.id);
-  return out;
-}
-function canSeeMessage(m, username) {
-  const u=String(username||'').toLowerCase();
-  if (m.groupId) return isGroupMember(m.groupId,u);
-  return m.senderUsername===u || m.recipientUsername===u;
-}
-function rateLimit(windowMs, max, keyFn) {
-  const buckets = new Map();
-  return (req,res,next)=>{
-    const key=String(keyFn(req)||req.ip||'unknown');
-    const t=Date.now(); let b=buckets.get(key);
-    if(!b || t-b.started>windowMs){b={started:t,count:0};buckets.set(key,b);}
-    b.count++;
-    if(b.count>max) return res.status(429).json({message:'Terlalu banyak request. Coba lagi sebentar.',retryAfterMs:Math.max(0,windowMs-(t-b.started))});
-    next();
-  };
-}
-
 function publicBaseUrl(req) {
   // Prefer an explicitly configured public URL. Otherwise derive the URL from
   // the request so production clients never receive http://127.0.0.1:5201.
@@ -205,13 +167,7 @@ function profileAudience(username) {
   out.delete(username);
   return [...out];
 }
-function groupMessageOut(m, req, viewer) {
-  const u=getUser(m.senderUsername);
-  const saved=viewer?db.contacts.find(c=>c.owner===viewer&&c.username===m.senderUsername):null;
-  const out={...decorateMessage(m,req,viewer),senderName:saved?.name || (u?displayName(u):m.senderUsername),senderAvatarUrl:rewriteUploadUrl(req,u?.avatarUrl||''),senderVerified:!!u?.verified};
-  if(m.poll){out.poll={question:m.poll.question,options:m.poll.options.map(o=>({id:o.id,text:o.text,votes:o.votes||0})),myVote:m.poll.voters?.[viewer]||null};}
-  return out;
-}
+function groupMessageOut(m, req, viewer) { const u=getUser(m.senderUsername); const saved=viewer?db.contacts.find(c=>c.owner===viewer&&c.username===m.senderUsername):null; return {...messageOut(m,req),senderName:saved?.name || (u?displayName(u):m.senderUsername),senderAvatarUrl:rewriteUploadUrl(req,u?.avatarUrl||''),senderVerified:!!u?.verified}; }
 function emitGroupUpdate(groupId) { const g=getGroup(groupId); if(!g)return; for(const member of db.groupMembers.filter(m=>m.groupId===String(groupId))) emitUser(member.username,'group:updated',{group:safeGroup(g,member.username)}); }
 function emitGroupMessage(groupId,m,req) { for(const member of db.groupMembers.filter(x=>x.groupId===String(groupId))) emitUser(member.username,'group:message:new',groupMessageOut(m,req,member.username)); }
 
@@ -223,7 +179,7 @@ function broadcastProfileUpdated(user, req) {
 function contactFor(owner, username, req) {
   const c = db.contacts.find(x => x.owner === owner && x.username === username);
   const u = getUser(username);
-  return { username, name: c?.name || (u ? displayName(u) : username), displayName: u ? displayName(u) : username, avatarUrl: rewriteUploadUrl(req, u?.avatarUrl || ''), verified: !!u?.verified, badges: u?.badges || [], banned: !!u?.banned, saved: !!c, blocked: db.blocks.some(b => b.owner === owner && b.username === username) };
+  return { username, name: c?.name || (u ? displayName(u) : username), displayName: u ? displayName(u) : username, avatarUrl: rewriteUploadUrl(req, u?.avatarUrl || ''), verified: !!u?.verified, badges: u?.badges || [], banned: !!u?.banned };
 }
 
 function getGroup(groupId) { return db.groups.find(g => g.id === String(groupId)); }
@@ -265,12 +221,8 @@ const app = express();
 app.disable('x-powered-by');
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '2mb' }));
-const authRateLimit = rateLimit(60_000, 80, req => req.ip);
-const sendRateLimit = rateLimit(10_000, 40, req => req.user?.username || req.ip);
-app.use('/api/auth/login', authRateLimit);
-app.use('/api/auth/register', authRateLimit);
 app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '1d' }));
-app.get('/', (req,res) => res.json({ name: 'ChatWithU API', ok: true, version: '5.0.0-pro', port: PORT, admin: '/admin' }));
+app.get('/', (req,res) => res.json({ name: 'ChatWithU API', ok: true, version: '4.0.0', port: PORT, admin: '/admin' }));
 app.get('/health', (req,res) => res.json({
   ok: true,
   time: now(),
@@ -420,12 +372,6 @@ app.get('/api/admin/health',adminAuth,(req,res)=>res.json({
   sockets:io.engine?.clientsCount || 0
 }));
 app.get('/api/admin/settings',adminAuth,(req,res)=>res.json(db.settings));
-app.get('/api/admin/system',adminAuth,(req,res)=>{
-  const mem=process.memoryUsage(); const recent=Date.now()-24*60*60*1000;
-  const uploads=(()=>{let bytes=0,files=0;const walk=d=>{if(!fs.existsSync(d))return;for(const n of fs.readdirSync(d)){const f=path.join(d,n);const st=fs.statSync(f);if(st.isDirectory())walk(f);else{files++;bytes+=st.size;}}};walk(UPLOAD_DIR);return {files,bytes};})();
-  res.json({ok:true,version:'5.0.0-pro',uptime:process.uptime(),node:process.version,platform:process.platform,arch:process.arch,pid:process.pid,memory:mem,online:onlineUsers.size,users:db.users.length,messages:db.messages.length,groups:db.groups.length,recentMessages:db.messages.filter(m=>Date.parse(m.createdAt||0)>=recent).length,uploads});
-});
-
 app.post('/api/admin/backup',adminAuth,(req,res)=>{
   try{
     save();
@@ -448,12 +394,10 @@ app.get('/api/contacts',auth,(req,res)=>res.json(db.contacts.filter(c=>c.owner==
 app.post('/api/contacts',auth,(req,res)=>{const username=cleanText(req.body?.username,32).toLowerCase();const u=getUser(username);if(!u)return res.status(404).json({message:'User tidak ditemukan'});if(username===req.user.username)return res.status(400).json({message:'Tidak bisa menambah diri sendiri'});if(!db.contacts.some(c=>c.owner===req.user.username&&c.username===username))db.contacts.push({owner:req.user.username,username,name:cleanText(req.body?.name,80)||displayName(u),createdAt:now()});save(); const out=contactFor(req.user.username,username,req); emitUser(req.user.username,'contacts:updated',{contact:out}); res.json(out);});
 app.patch('/api/contacts/:username',auth,(req,res)=>{const username=decodeURIComponent(String(req.params.username||'')).toLowerCase();const contact=db.contacts.find(c=>c.owner===req.user.username&&c.username===username);if(!contact)return res.status(404).json({message:'Kontak tidak ditemukan.'});const name=cleanText(req.body?.name,80);if(!name)return res.status(400).json({message:'Nama kontak tidak boleh kosong.'});contact.name=name;save();const out=contactFor(req.user.username,username,req);emitUser(req.user.username,'contacts:updated',{contact:out});res.json(out);});
 app.delete('/api/contacts/:username',auth,(req,res)=>{db.contacts=db.contacts.filter(c=>!(c.owner===req.user.username&&c.username===req.params.username));save();res.json({ok:true});});
-app.post('/api/blocks/:username',auth,(req,res)=>{const username=String(req.params.username||'').toLowerCase();if(!getUser(username))return res.status(404).json({message:'User tidak ditemukan'});if(username===req.user.username)return res.status(400).json({message:'Tidak bisa memblokir diri sendiri'});if(!db.blocks.some(b=>b.owner===req.user.username&&b.username===username))db.blocks.push({owner:req.user.username,username,createdAt:now()});save();res.json({ok:true,blocked:true});});
-app.delete('/api/blocks/:username',auth,(req,res)=>{const username=String(req.params.username||'').toLowerCase();db.blocks=db.blocks.filter(b=>!(b.owner===req.user.username&&b.username===username));save();res.json({ok:true,blocked:false});});
 app.get('/api/home',auth,(req,res)=>{const users=[...new Set(db.messages.filter(m=>m.senderUsername===req.user.username||m.recipientUsername===req.user.username).map(m=>m.senderUsername===req.user.username?m.recipientUsername:m.senderUsername))];const inbox=users.map(u=>{const msgs=visibleMessages(req.user.username,u);const last=msgs[msgs.length-1];return {...contactFor(req.user.username,u,req),lastMessage:last?.type==='text'?last.message:last?`[${last.type}]`:'',lastMessageAt:last?.createdAt||null,unread:msgs.filter(m=>m.recipientUsername===req.user.username&&m.status!=='read').length};});const groups=db.groups.filter(g=>isGroupMember(g.id,req.user.username)).map(g=>groupSummary(g,req.user.username)); res.json({user:safeUser(req.user, req),contacts:db.contacts.filter(c=>c.owner===req.user.username).map(c=>contactFor(req.user.username,c.username,req)),inbox,groups,serverTime:now(),settings:db.settings});});
 app.get('/api/chats/:username/messages',auth,(req,res)=>{let msgs=visibleMessages(req.user.username,String(req.params.username));const since=req.query.since?Date.parse(req.query.since):NaN;if(Number.isFinite(since))msgs=msgs.filter(m=>Date.parse(m.updatedAt||m.createdAt)>since);res.json(msgs.map(m => messageOut(m, req)));});
-app.post('/api/chats/:username/messages',auth,sendRateLimit,(req,res)=>{const other=String(req.params.username).toLowerCase();if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});if(db.blocks.some(b=>b.owner===other&&b.username===req.user.username)||db.blocks.some(b=>b.owner===req.user.username&&b.username===other))return res.status(403).json({message:'Kontak diblokir.'});const idem=cleanId(req.body?.clientMessageId,120);const existing= findIdempotent(req.user.username,idem); if(existing){const old=findMessage(existing.messageId);if(old)return res.json(decorateMessage(old,req,req.user.username));} const text=cleanText(req.body?.message,4000);if(!text)return res.status(400).json({message:'Pesan kosong'});const replyToId=cleanText(req.body?.replyToId,80);const replyTo=replyToId?db.messages.find(x=>x.id===replyToId&&((x.senderUsername===req.user.username&&x.recipientUsername===other)||(x.senderUsername===other&&x.recipientUsername===req.user.username))):null;const m={id:id(),type:'text',message:text,url:'',mediaUrl:'',senderUsername:req.user.username,recipientUsername:other,status:'delivered',createdAt:now(),updatedAt:now()};if(replyTo)m.replyTo={id:replyTo.id,type:replyTo.type,message:replyTo.message||replyTo.caption||'',senderUsername:replyTo.senderUsername,fileName:replyTo.fileName||'',url:replyTo.url||''};db.messages.push(m);rememberIdempotent(req.user.username,idem,m.id);save();const out=decorateMessage(m,req,req.user.username);emitUser(other,'message:new',out);emitUser(req.user.username,'message:new',out);res.json(out);});
-app.post('/api/chats/:username/media',auth,sendRateLimit,mediaUpload.single('file'),(req,res)=>{const other=String(req.params.username).toLowerCase();if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});if(db.blocks.some(b=>b.owner===other&&b.username===req.user.username)||db.blocks.some(b=>b.owner===req.user.username&&b.username===other))return res.status(403).json({message:'Kontak diblokir.'});if(!req.file)return res.status(400).json({message:'File tidak valid'});const idem=cleanId(req.body?.clientMessageId,120);const existing=findIdempotent(req.user.username,idem);if(existing){const old=findMessage(existing.messageId);if(old)return res.json(decorateMessage(old,req,req.user.username));}const type=['image','video','sticker','file'].includes(req.body?.type)?req.body.type:'file';const caption=cleanText(req.body?.caption ?? req.body?.message ?? '',4000);const mime=String(req.file.mimetype||'').toLowerCase();const ext=path.extname(req.file.originalname||'').toLowerCase();const imageExts=['.jpg','.jpeg','.png','.webp','.gif','.heic','.heif','.avif'];const videoExts=['.mp4','.m4v','.mov','.webm','.mkv','.3gp','.avi'];const isImage=mime.startsWith('image/')||imageExts.includes(ext);const isVideo=mime.startsWith('video/')||videoExts.includes(ext);if((type==='image'||type==='sticker')&&!isImage)return res.status(400).json({message:'Lampiran bukan foto.'});if(type==='video'&&!isVideo)return res.status(400).json({message:'Lampiran bukan video.'});const url=uploadUrl(req,'media',req.file.filename);const replyToId=cleanText(req.body?.replyToId,80);const replyTo=replyToId?db.messages.find(x=>x.id===replyToId&&((x.senderUsername===req.user.username&&x.recipientUsername===other)||(x.senderUsername===other&&x.recipientUsername===req.user.username))):null;const m={id:id(),type,message:caption,url,mediaUrl:url,fileName:req.file.originalname,caption,mimeType:req.file.mimetype,size:req.file.size,senderUsername:req.user.username,recipientUsername:other,status:'delivered',mediaAvailable:true,storageFile:req.file.filename,createdAt:now(),updatedAt:now()};if(replyTo)m.replyTo={id:replyTo.id,type:replyTo.type,message:replyTo.message||replyTo.caption||'',senderUsername:replyTo.senderUsername,fileName:replyTo.fileName||'',url:replyTo.url||''};db.messages.push(m);rememberIdempotent(req.user.username,idem,m.id);save();const out=decorateMessage(m,req,req.user.username);emitUser(other,'message:new',out);emitUser(req.user.username,'message:new',out);res.json(out);});
+app.post('/api/chats/:username/messages',auth,(req,res)=>{const other=String(req.params.username).toLowerCase();if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});const text=cleanText(req.body?.message,4000);if(!text)return res.status(400).json({message:'Pesan kosong'});const m={id:id(),type:'text',message:text,url:'',mediaUrl:'',senderUsername:req.user.username,recipientUsername:other,status:'delivered',createdAt:now(),updatedAt:now()};db.messages.push(m);save();const out=messageOut(m,req);emitUser(other,'message:new',out);emitUser(req.user.username,'message:new',out);res.json(out);});
+app.post('/api/chats/:username/media',auth,mediaUpload.single('file'),(req,res)=>{const other=String(req.params.username).toLowerCase();if(!getUser(other))return res.status(404).json({message:'User tidak ditemukan'});if(!req.file)return res.status(400).json({message:'File tidak valid'});const type=['image','video','sticker','file'].includes(req.body?.type)?req.body.type:'file';const caption=cleanText(req.body?.caption ?? req.body?.message ?? '',4000);const mime=String(req.file.mimetype||'').toLowerCase();const ext=path.extname(req.file.originalname||'').toLowerCase();const imageExts=['.jpg','.jpeg','.png','.webp','.gif','.heic','.heif','.avif'];const videoExts=['.mp4','.m4v','.mov','.webm','.mkv','.3gp','.avi'];const isImage=mime.startsWith('image/')||imageExts.includes(ext);const isVideo=mime.startsWith('video/')||videoExts.includes(ext);if((type==='image'||type==='sticker')&&!isImage)return res.status(400).json({message:'Lampiran bukan foto.'});if(type==='video'&&!isVideo)return res.status(400).json({message:'Lampiran bukan video.'});const url=uploadUrl(req,'media',req.file.filename);const m={id:id(),type,message:caption,url,mediaUrl:url,fileName:req.file.originalname,caption,mimeType:req.file.mimetype,size:req.file.size,senderUsername:req.user.username,recipientUsername:other,status:'delivered',mediaAvailable:true,storageFile:req.file.filename,createdAt:now(),updatedAt:now()};db.messages.push(m);save();emitUser(other,'message:new',messageOut(m, req));emitUser(req.user.username,'message:new',messageOut(m, req));res.json(messageOut(m, req));});
 
 
 app.get('/api/groups',auth,(req,res)=>{
@@ -481,23 +425,16 @@ app.get('/api/groups/:id/messages',auth,(req,res)=>{
   const g=getGroup(req.params.id); if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});
   let msgs=visibleGroupMessages(g.id,req.user.username); const since=req.query.since?Date.parse(req.query.since):NaN; if(Number.isFinite(since))msgs=msgs.filter(m=>Date.parse(m.updatedAt||m.createdAt)>since); res.json(msgs.map(m=>groupMessageOut(m,req,req.user.username)));
 });
-app.post('/api/groups/:id/messages',auth,sendRateLimit,(req,res)=>{
+app.post('/api/groups/:id/messages',auth,(req,res)=>{
   const g=getGroup(req.params.id); if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});
-  const idem=cleanId(req.body?.clientMessageId,120);const existing=findIdempotent(req.user.username,idem);if(existing){const old=findMessage(existing.messageId);if(old)return res.json(groupMessageOut(old,req,req.user.username));}
   const text=cleanText(req.body?.message,4000); if(!text)return res.status(400).json({message:'Pesan kosong'});
-  const replyToId=cleanText(req.body?.replyToId,80);const replyTo=replyToId?db.messages.find(x=>x.id===replyToId&&x.groupId===g.id):null;
-  const m={id:id(),groupId:g.id,type:'text',message:text,url:'',mediaUrl:'',senderUsername:req.user.username,status:'delivered',createdAt:now(),updatedAt:now(),readBy:[req.user.username]};
-  if(replyTo)m.replyTo={id:replyTo.id,type:replyTo.type,message:replyTo.message||replyTo.caption||'',senderUsername:replyTo.senderUsername,fileName:replyTo.fileName||'',url:replyTo.url||''};
-  db.messages.push(m);rememberIdempotent(req.user.username,idem,m.id); save(); emitGroupMessage(g.id,m,req); res.json(groupMessageOut(m,req,req.user.username));
+  const m={id:id(),groupId:g.id,type:'text',message:text,url:'',mediaUrl:'',senderUsername:req.user.username,status:'delivered',createdAt:now(),updatedAt:now(),readBy:[req.user.username]}; db.messages.push(m); save(); emitGroupMessage(g.id,m,req); res.json(groupMessageOut(m,req));
 });
-app.post('/api/groups/:id/media',auth,sendRateLimit,mediaUpload.single('file'),(req,res)=>{
-  const g=getGroup(req.params.id); if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'}); if(!req.file)return res.status(400).json({message:'File tidak valid'}); const idem=cleanId(req.body?.clientMessageId,120);const existing=findIdempotent(req.user.username,idem);if(existing){const old=findMessage(existing.messageId);if(old)return res.json(groupMessageOut(old,req,req.user.username));}
+app.post('/api/groups/:id/media',auth,mediaUpload.single('file'),(req,res)=>{
+  const g=getGroup(req.params.id); if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'}); if(!req.file)return res.status(400).json({message:'File tidak valid'});
   const type=['image','video','sticker','file'].includes(req.body?.type)?req.body.type:'file'; const caption=cleanText(req.body?.caption ?? req.body?.message ?? '',4000); const mime=String(req.file.mimetype||'').toLowerCase(); const ext=path.extname(req.file.originalname||'').toLowerCase(); const imageExts=['.jpg','.jpeg','.png','.webp','.gif','.heic','.heif','.avif']; const videoExts=['.mp4','.m4v','.mov','.webm','.mkv','.3gp','.avi']; const isImage=mime.startsWith('image/')||imageExts.includes(ext); const isVideo=mime.startsWith('video/')||videoExts.includes(ext); if((type==='image'||type==='sticker')&&!isImage)return res.status(400).json({message:'Lampiran bukan foto.'}); if(type==='video'&&!isVideo)return res.status(400).json({message:'Lampiran bukan video.'});
-  const url=uploadUrl(req,'media',req.file.filename); const m={id:id(),groupId:g.id,type,message:caption,url,mediaUrl:url,fileName:req.file.originalname,caption,mimeType:req.file.mimetype,size:req.file.size,senderUsername:req.user.username,status:'delivered',mediaAvailable:true,storageFile:req.file.filename,createdAt:now(),updatedAt:now(),readBy:[req.user.username]}; db.messages.push(m); rememberIdempotent(req.user.username,idem,m.id); save(); emitGroupMessage(g.id,m,req); res.json(groupMessageOut(m,req,req.user.username));
+  const url=uploadUrl(req,'media',req.file.filename); const m={id:id(),groupId:g.id,type,message:caption,url,mediaUrl:url,fileName:req.file.originalname,caption,mimeType:req.file.mimetype,size:req.file.size,senderUsername:req.user.username,status:'delivered',mediaAvailable:true,storageFile:req.file.filename,createdAt:now(),updatedAt:now(),readBy:[req.user.username]}; db.messages.push(m); save(); emitGroupMessage(g.id,m,req); res.json(groupMessageOut(m,req));
 });
-app.post('/api/groups/:id/polls',auth,(req,res)=>{const g=getGroup(req.params.id);if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});const question=cleanText(req.body?.question,300);const raw=Array.isArray(req.body?.options)?req.body.options:[];const options=raw.map((x,i)=>({id:String(i+1),text:cleanText(x,120),votes:0})).filter(x=>x.text);if(!question||options.length<2)return res.status(400).json({message:'Polling butuh judul dan minimal 2 pilihan.'});const m={id:id(),groupId:g.id,type:'poll',message:question,poll:{question,options,voters:{}},senderUsername:req.user.username,status:'delivered',createdAt:now(),updatedAt:now(),readBy:[req.user.username]};db.messages.push(m);save();emitGroupMessage(g.id,m,req);res.json(groupMessageOut(m,req));});
-app.post('/api/groups/:id/polls/:messageId/vote',auth,(req,res)=>{const g=getGroup(req.params.id);if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});const m=db.messages.find(x=>x.id===req.params.messageId&&x.groupId===g.id&&x.type==='poll'&&x.poll);if(!m)return res.status(404).json({message:'Polling tidak ditemukan.'});const optionId=String(req.body?.optionId||'');if(!m.poll.options.some(o=>o.id===optionId))return res.status(400).json({message:'Pilihan tidak valid.'});if(m.poll.voters?.[req.user.username])return res.status(409).json({message:'Anda sudah memilih.'});m.poll.voters=m.poll.voters||{};m.poll.voters[req.user.username]=optionId;const opt=m.poll.options.find(o=>o.id===optionId);opt.votes=(opt.votes||0)+1;m.updatedAt=now();save();emitGroupMessage(g.id,m,req);res.json(groupMessageOut(m,req));});
-app.delete('/api/groups/:id/messages/:messageId',auth,(req,res)=>{const g=getGroup(req.params.id);if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});const m=db.messages.find(x=>x.id===req.params.messageId&&x.groupId===g.id);if(!m)return res.status(404).json({message:'Pesan tidak ditemukan'});if(m.senderUsername!==req.user.username&&!groupAdmin(g.id,req.user.username))return res.status(403).json({message:'Tidak boleh menghapus pesan ini.'});m.deleted=true;m.message='';m.caption='';m.updatedAt=now();m.mediaAvailable=false;if(m.storageFile){try{fs.unlinkSync(path.join(UPLOAD_DIR,'media',path.basename(m.storageFile)));}catch{}}save();emitGroupMessage(g.id,m,req);res.json(groupMessageOut(m,req));});
 app.post('/api/groups/:id/read',auth,(req,res)=>{const g=getGroup(req.params.id);if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});for(const m of db.messages.filter(m=>m.groupId===g.id)){if(!Array.isArray(m.readBy))m.readBy=[];if(!m.readBy.includes(req.user.username))m.readBy.push(req.user.username);m.updatedAt=now();}save();res.json({ok:true});});
 app.post('/api/groups/:id/typing',auth,(req,res)=>{const g=getGroup(req.params.id);if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});emitGroup(g.id,'group:typing',{groupId:g.id,from:req.user.username,typing:req.body?.typing===true});res.json({ok:true});});
 app.post('/api/groups/:id/members',auth,(req,res)=>{const g=getGroup(req.params.id);if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});if(g.onlyAdminsManage!==false&&!groupAdmin(g.id,req.user.username))return res.status(403).json({message:'Hanya admin yang dapat menambah anggota.'});const usernames=Array.isArray(req.body?.members)?req.body.members:[req.body?.username];const added=[];for(const raw of usernames){const u=String(raw||'').trim().toLowerCase();if(!u||u===req.user.username||!getUser(u)||isGroupMember(g.id,u))continue;db.groupMembers.push({groupId:g.id,username:u,role:'member',addedAt:now()});added.push(u);}if(!added.length)return res.status(400).json({message:'Tidak ada anggota baru.'});save();emitGroupUpdate(g.id);res.json(safeGroup(g,req.user.username));});
@@ -505,60 +442,9 @@ app.delete('/api/groups/:id/members/:username',auth,(req,res)=>{const g=getGroup
 app.patch('/api/groups/:id/members/:username/role',auth,(req,res)=>{const g=getGroup(req.params.id);const target=String(req.params.username).toLowerCase();const role=String(req.body?.role||'member');if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});if(groupRole(g.id,req.user.username)!=='owner')return res.status(403).json({message:'Hanya pembuat grup yang dapat mengatur admin.'});const tm=groupMember(g.id,target);if(!tm)return res.status(404).json({message:'Anggota tidak ditemukan.'});if(tm.role==='owner')return res.status(400).json({message:'Pemilik grup tidak dapat diturunkan.'});if(!['admin','member'].includes(role))return res.status(400).json({message:'Role tidak valid.'});tm.role=role;save();emitGroupUpdate(g.id);res.json({ok:true});});
 app.patch('/api/groups/:id/settings',auth,(req,res)=>{const g=getGroup(req.params.id);if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});if(groupRole(g.id,req.user.username)!=='owner')return res.status(403).json({message:'Hanya pembuat grup yang dapat mengubah pengaturan ini.'});if(req.body.onlyAdminsManage!==undefined)g.onlyAdminsManage=!!req.body.onlyAdminsManage;if(req.body.name!==undefined)g.name=cleanText(req.body.name,80)||g.name;if(req.body.description!==undefined)g.description=cleanText(req.body.description,500);save();emitGroupUpdate(g.id);res.json(safeGroup(g,req.user.username));});
 app.post('/api/groups/:id/leave',auth,(req,res)=>{const g=getGroup(req.params.id);if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});if(groupRole(g.id,req.user.username)==='owner')return res.status(403).json({message:'Pembuat grup tidak dapat keluar. Alihkan kepemilikan terlebih dahulu.'});db.groupMembers=db.groupMembers.filter(m=>!(m.groupId===g.id&&m.username===req.user.username));save();emitGroupUpdate(g.id);res.json({ok:true});});
-
-app.patch('/api/chats/:username/messages/:id',auth,(req,res)=>{
-  const other=String(req.params.username).toLowerCase(); const m=findMessage(req.params.id);
-  if(!m || m.groupId || !((m.senderUsername===req.user.username&&m.recipientUsername===other)||(m.senderUsername===other&&m.recipientUsername===req.user.username))) return res.status(404).json({message:'Pesan tidak ditemukan.'});
-  if(m.senderUsername!==req.user.username) return res.status(403).json({message:'Hanya pengirim yang dapat mengedit pesan.'});
-  if(m.type!=='text' || m.deleted) return res.status(400).json({message:'Hanya pesan teks yang bisa diedit.'});
-  const text=cleanText(req.body?.message,4000); if(!text)return res.status(400).json({message:'Pesan kosong.'});
-  m.message=text; m.edited=true; m.editedAt=now(); m.updatedAt=now(); save();
-  const out=decorateMessage(m,req,req.user.username); emitUser(other,'message:updated',out); emitUser(req.user.username,'message:updated',out); res.json(out);
-});
-
-app.post('/api/messages/:id/reactions',auth,(req,res)=>{
-  const m=findMessage(req.params.id); const emoji=cleanText(req.body?.emoji,16);
-  if(!m || !canSeeMessage(m,req.user.username)) return res.status(404).json({message:'Pesan tidak ditemukan.'});
-  if(!emoji || emoji.length>8) return res.status(400).json({message:'Emoji tidak valid.'});
-  db.reactions=db.reactions||[];
-  const old=db.reactions.find(r=>r.messageId===m.id&&r.username===req.user.username);
-  if(old) old.emoji=emoji; else db.reactions.push({messageId:m.id,username:req.user.username,emoji,createdAt:now()});
-  save(); const out=decorateMessage(m,req,req.user.username);
-  if(m.groupId) emitGroupMessage(m.groupId,m,req); else {emitUser(m.senderUsername,'message:updated',out);emitUser(m.recipientUsername,'message:updated',out);}
-  res.json(out);
-});
-app.delete('/api/messages/:id/reactions',auth,(req,res)=>{
-  const m=findMessage(req.params.id); if(!m || !canSeeMessage(m,req.user.username)) return res.status(404).json({message:'Pesan tidak ditemukan.'});
-  db.reactions=(db.reactions||[]).filter(r=>!(r.messageId===m.id&&r.username===req.user.username)); save();
-  const out=decorateMessage(m,req,req.user.username);
-  if(m.groupId) emitGroupMessage(m.groupId,m,req); else {emitUser(m.senderUsername,'message:updated',out);emitUser(m.recipientUsername,'message:updated',out);}
-  res.json(out);
-});
-app.post('/api/messages/:id/pin',auth,(req,res)=>{
-  const m=findMessage(req.params.id); if(!m || !canSeeMessage(m,req.user.username)) return res.status(404).json({message:'Pesan tidak ditemukan.'});
-  if(m.groupId && !groupAdmin(m.groupId,req.user.username)) return res.status(403).json({message:'Hanya admin grup yang dapat menyematkan pesan.'});
-  db.pinned=db.pinned||[]; if(!db.pinned.some(p=>p.messageId===m.id)) db.pinned.push({messageId:m.id,pinnedBy:req.user.username,pinnedAt:now()}); save();
-  const out= m.groupId ? groupMessageOut(m,req,req.user.username) : decorateMessage(m,req,req.user.username);
-  if(m.groupId) emitGroupMessage(m.groupId,m,req); else {emitUser(m.senderUsername,'message:updated',out);emitUser(m.recipientUsername,'message:updated',out);}
-  res.json(out);
-});
-app.delete('/api/messages/:id/pin',auth,(req,res)=>{
-  const m=findMessage(req.params.id); if(!m || !canSeeMessage(m,req.user.username)) return res.status(404).json({message:'Pesan tidak ditemukan.'});
-  if(m.groupId && !groupAdmin(m.groupId,req.user.username)) return res.status(403).json({message:'Hanya admin grup yang dapat melepas sematan.'});
-  db.pinned=(db.pinned||[]).filter(p=>p.messageId!==m.id); save();
-  const out=m.groupId?groupMessageOut(m,req,req.user.username):decorateMessage(m,req,req.user.username);
-  if(m.groupId) emitGroupMessage(m.groupId,m,req); else {emitUser(m.senderUsername,'message:updated',out);emitUser(m.recipientUsername,'message:updated',out);}
-  res.json(out);
-});
-app.get('/api/chats/:username/pinned',auth,(req,res)=>{
-  const other=String(req.params.username).toLowerCase(); const msgs=visibleMessages(req.user.username,other).filter(m=>(db.pinned||[]).some(p=>p.messageId===m.id)); res.json(msgs.map(m=>decorateMessage(m,req,req.user.username)));
-});
-app.get('/api/groups/:id/pinned',auth,(req,res)=>{const g=getGroup(req.params.id);if(!g||!isGroupMember(g.id,req.user.username))return res.status(404).json({message:'Grup tidak ditemukan.'});res.json(db.messages.filter(m=>m.groupId===g.id&&(db.pinned||[]).some(p=>p.messageId===m.id)).map(m=>groupMessageOut(m,req,req.user.username)));});
-
-app.delete('/api/chats/:username/messages/:id',auth,(req,res)=>{const other=String(req.params.username).toLowerCase();const m=db.messages.find(x=>x.id===req.params.id&&((x.senderUsername===req.user.username&&x.recipientUsername===other)||(x.senderUsername===other&&x.recipientUsername===req.user.username)));if(!m)return res.status(404).json({message:'Pesan tidak ditemukan'});if(m.senderUsername!==req.user.username)return res.status(403).json({message:'Hanya pengirim yang dapat menghapus pesan.'});m.deleted=true;m.message='';m.caption='';m.updatedAt=now();m.mediaAvailable=false;if(m.storageFile){try{fs.unlinkSync(path.join(UPLOAD_DIR,'media',path.basename(m.storageFile)));}catch{}}save();const out=messageOut(m,req);emitUser(other,'message:updated',out);emitUser(req.user.username,'message:updated',out);res.json(out);});
 app.get('/api/media/:id/download',auth,(req,res)=>{
   const m=db.messages.find(x=>x.id===req.params.id);
-  if(!m||!['image','video','sticker','file'].includes(m.type)) return res.status(404).json({message:'Media tidak ditemukan'});
+  if(!m||!['image','video','sticker'].includes(m.type)) return res.status(404).json({message:'Media tidak ditemukan'});
   if(m.groupId){ if(!isGroupMember(m.groupId,req.user.username)) return res.status(403).json({message:'Bukan anggota grup.'}); } else if(m.recipientUsername!==req.user.username) return res.status(403).json({message:'Media hanya bisa diambil oleh penerima.'});
   if(m.mediaAvailable===false) return res.status(410).json({message:'Media sudah diambil dari server.'});
   if(activeMediaDownloads.has(m.id)) return res.status(409).json({message:'Media sedang diunduh.'});
@@ -575,7 +461,7 @@ app.get('/api/media/:id/download',auth,(req,res)=>{
     save();
   });
 });
-app.post('/api/chats/:username/read',auth,(req,res)=>{const other=String(req.params.username).toLowerCase();const ids=[];db.messages.forEach(m=>{if(m.senderUsername===other&&m.recipientUsername===req.user.username&&m.status!=='read'){m.status='read';ids.push(m.id);}});save();if(ids.length)emitUser(other,'message:read',{username:req.user.username,other,ids});res.json({ok:true,ids});});
+app.post('/api/chats/:username/read',auth,(req,res)=>{const other=String(req.params.username);db.messages.forEach(m=>{if(m.senderUsername===other&&m.recipientUsername===req.user.username)m.status='read';});save();emitUser(other,'message:read',{username:req.user.username,other});res.json({ok:true});});
 app.post('/api/chats/:username/clear',auth,(req,res)=>{const other=String(req.params.username);db.hidden=db.hidden.filter(h=>!(h.owner===req.user.username&&h.other===other));db.hidden.push({owner:req.user.username,other,before:now()});save();res.json({ok:true});});
 app.get('/api/chats/:username/search',auth,(req,res)=>{const q=String(req.query.q||'').trim().toLowerCase();if(!q)return res.json([]);res.json(visibleMessages(req.user.username,String(req.params.username)).filter(m=>String(m.message||m.fileName||'').toLowerCase().includes(q)).map(messageOut));});
 app.get('/api/chats/:username/media',auth,(req,res)=>{const msgs=visibleMessages(req.user.username,String(req.params.username));res.json({media:msgs.filter(m=>m.type==='image'||m.type==='video'||m.type==='sticker').map(m=>messageOut(m,req)),docs:msgs.filter(m=>m.type==='file').map(m=>messageOut(m,req)),links:msgs.filter(m=>m.type==='text'&&/(https?:\/\/|www\.)/i.test(m.message||''))});});
