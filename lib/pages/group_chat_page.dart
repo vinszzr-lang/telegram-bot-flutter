@@ -256,7 +256,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final d = await getApplicationDocumentsDirectory();
     final dir = Directory('${d.path}/chatwithu_group_media');
     final name = (m['fileName'] ?? 'media').toString().replaceAll(RegExp(r'[^a-zA-Z0-9_.-]'), '_');
-    return File('${dir.path}/${m['id']}_${name}');
+    return File('${dir.path}/${m['id']}_$name');
   }
 
   Future<void> _restoreMedia() async {
@@ -432,7 +432,6 @@ class _GroupChatPageState extends State<GroupChatPage> {
     children.add(const SizedBox(height: 2));
     children.add(Row(mainAxisSize: MainAxisSize.min, children: [Text(_time(m['createdAt']), style: const TextStyle(fontSize: 10, color: Colors.white54)), if (mine) ...[const SizedBox(width: 3), Icon(m['status'] == 'read' ? Icons.done_all : Icons.done_all, size: 15, color: m['status'] == 'read' ? const Color(0xFF64B5F6) : Colors.white54)]]));
     final bubble = Container(constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * .84), margin: const EdgeInsets.only(bottom: 6), padding: const EdgeInsets.fromLTRB(10, 8, 8, 6), decoration: BoxDecoration(color: isSelected ? const Color(0xFF365C4D) : mine ? const Color(0xFF286A54) : const Color(0xFF20282C), borderRadius: BorderRadius.circular(13)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: children));
-    final id = m['id']?.toString() ?? '';
     return _GroupSwipeReply(
       offset: _swipeOffsets[id] ?? 0,
       onOffsetChanged: (v) => setState(() => _swipeOffsets[id] = v),
