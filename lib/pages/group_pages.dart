@@ -131,15 +131,30 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
       title: const Text('Tambah anggota'),
       content: SizedBox(width: 420, height: 360, child: ListView(children: contacts.where((x) => !existing.contains(x['username'])).map((x) {
         final u = x['username'].toString();
-        return CheckboxListTile(value: picked.contains(u), onChanged: (_) => setLocal(() { if (picked.contains(u)) picked.remove(u); else picked.add(u); }), title: Text((x['name'] ?? u).toString()), subtitle: Text('@$u'));
+        return CheckboxListTile(value: picked.contains(u), onChanged: (_) => setLocal(() {
+              if (picked.contains(u)) {
+                picked.remove(u);
+              } else {
+                picked.add(u);
+              }
+            }), title: Text((x['name'] ?? u).toString()), subtitle: Text('@$u'));
       }).toList())),
       actions: [
         TextButton(onPressed: () => Navigator.pop(c), child: const Text('Batal')),
-        FilledButton(onPressed: () async {
-          Navigator.pop(c);
-          try { final next = await api.addGroupMembers(widget.session.token!, widget.groupId, picked.toList()); if (mounted) setState(() => group = next); }
-          catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()))); }
-        }, child: const Text('Tambah')),
+        FilledButton(
+          onPressed: () async {
+            Navigator.pop(c);
+            try {
+              final next = await api.addGroupMembers(widget.session.token!, widget.groupId, picked.toList());
+              if (!context.mounted) return;
+              setState(() => group = next);
+            } catch (e) {
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+            }
+          },
+          child: const Text('Tambah'),
+        ),
       ],
     )));
   }
@@ -195,7 +210,21 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
             );
           }),
           const SizedBox(height: 20),
-          if (g['role'] != 'owner') OutlinedButton.icon(onPressed: () async { try { await api.leaveGroup(widget.session.token!, widget.groupId); if (mounted) Navigator.pop(context, true); } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()))); } }, icon: const Icon(Icons.logout), label: const Text('Keluar dari grup')),
+          if (g['role'] != 'owner')
+            OutlinedButton.icon(
+              onPressed: () async {
+                try {
+                  await api.leaveGroup(widget.session.token!, widget.groupId);
+                  if (!context.mounted) return;
+                  Navigator.pop(context, true);
+                } catch (e) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+                }
+              },
+              icon: const Icon(Icons.logout),
+              label: const Text('Keluar dari grup'),
+            ),
         ],
       ),
     );

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../services/session.dart';
-import '../services/api.dart';
 import '../widgets/verified_badge.dart';
 
 class ContactProfilePage extends StatelessWidget {

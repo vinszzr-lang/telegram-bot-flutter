@@ -33,7 +33,19 @@ class _GroupChatPageState extends State<GroupChatPage> {
   Future<void> _sendText()async{final text=input.text.trim();if(text.isEmpty)return;input.clear();socket.emit('group:typing',{'groupId':group['id'],'typing':false});final temp={'id':'local-${DateTime.now().microsecondsSinceEpoch}','groupId':group['id'],'type':'text','message':text,'senderUsername':widget.session.username,'createdAt':DateTime.now().toUtc().toIso8601String(),'status':'sending'};messages.add(temp);setState((){});_bottom();try{final r=await api.sendGroupMessage(widget.session.token!,group['id'].toString(),text);_merge([r]);await LocalCache.saveMessages('group_${group['id']}',messages);if(mounted)setState((){});}catch(_){final i=messages.indexWhere((m)=>m['id']==temp['id']);if(i>=0)messages[i]={...messages[i],'status':'failed'};if(mounted)setState((){});}}
   Future<void> _pickMedia(bool video)async{final x=video?await picker.pickVideo(source:ImageSource.gallery,maxDuration:const Duration(minutes:10)):await picker.pickImage(source:ImageSource.gallery,imageQuality:92,maxWidth:2400,maxHeight:2400);if(x==null)return;final f=File(x.path);if(!await f.exists())return;if(await f.length()>50*1024*1024){if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Maksimal 50 MB.')));return;}setState(()=>sending=true);try{final r=await api.uploadGroupMedia(widget.session.token!,group['id'].toString(),f,type:video?'video':'image');_merge([r]);await LocalCache.saveMessages('group_${group['id']}',messages);if(mounted)setState((){});_bottom();}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Gagal mengirim media: $e')));}finally{if(mounted)setState(()=>sending=false);}}
   Future<void> _download(Map<String,dynamic> m)async{final id=m['id']?.toString()??'';if(id.isEmpty||downloaded.containsKey(id))return;try{final r=await api.downloadMedia(widget.session.token!,id);if(r.statusCode!=200)throw Exception();final dir=await Directory.systemTemp.createTemp('xchat_media');final path='${dir.path}/${m['fileName']??'media_$id'}';await File(path).writeAsBytes(r.bodyBytes,flush:true);downloaded[id]=path;if(mounted)setState((){});}catch(_){if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Media belum tersedia.')));}}
-  void _bottom({bool jump=false}){WidgetsBinding.instance.addPostFrameCallback((_){if(!scroll.hasClients)return;final t=scroll.position.maxScrollExtent;if(jump)scroll.jumpTo(t);else scroll.animateTo(t,duration:const Duration(milliseconds:140),curve:Curves.easeOut);});}
+  void _bottom({bool jump=false}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!scroll.hasClients) {
+        return;
+      }
+      final t = scroll.position.maxScrollExtent;
+      if (jump) {
+        scroll.jumpTo(t);
+      } else {
+        scroll.animateTo(t, duration: const Duration(milliseconds: 140), curve: Curves.easeOut);
+      }
+    });
+  }
   String _time(dynamic v){final d=DateTime.tryParse(v?.toString()??'')?.toLocal();return d==null?'':'${d.hour.toString().padLeft(2,'0')}:${d.minute.toString().padLeft(2,'0')}';}
   String _memberSubtitle(){final members=List<dynamic>.from(group['members']??const []);return members.map((e)=>(e['name']??e['username']).toString()).take(4).join(', ');}
   Widget _avatar(Map<String,dynamic> m){final a=(m['senderAvatarUrl']??'').toString();final n=(m['senderName']??m['senderUsername']??'?').toString();return CircleAvatar(radius:14,backgroundImage:a.isNotEmpty?NetworkImage(a):null,child:a.isEmpty?Text(n.isEmpty?'?':n[0].toUpperCase(),style:const TextStyle(fontSize:11)):null);}

@@ -1427,12 +1427,65 @@ class _VideoViewerPageState extends State<_VideoViewerPage> {
   }
 }
 
-class _ImageViewerPage extends StatelessWidget{
+class _ImageViewerPage extends StatelessWidget {
   final String path;
-  final Map<String,dynamic> message;
+  final Map<String, dynamic> message;
   final VoidCallback onSave;
-  const _ImageViewerPage({required this.path,required this.message,required this.onSave});
-  @override Widget build(BuildContext context)=>Scaffold(backgroundColor:Colors.black,appBar:AppBar(backgroundColor:Colors.black,title:const SizedBox.shrink(),actions:[IconButton(tooltip:'Simpan ke galeri',onPressed:onSave,icon:const Icon(Icons.download_rounded))]),body:Center(child:InteractiveViewer(constrained:false,clipBehavior:Clip.none,minScale:.5,maxScale:6,child:Image.file(File(path),errorBuilder:(_,__,___)=>const Icon(Icons.broken_image,color:Colors.white,size:48)))));
+
+  const _ImageViewerPage({
+    required this.path,
+    required this.message,
+    required this.onSave,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        title: const SizedBox.shrink(),
+        actions: [
+          IconButton(
+            tooltip: 'Simpan ke galeri',
+            onPressed: onSave,
+            icon: const Icon(Icons.download_rounded),
+          ),
+        ],
+      ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          final height = constraints.maxHeight;
+          return InteractiveViewer(
+            constrained: false,
+            clipBehavior: Clip.none,
+            minScale: 1,
+            maxScale: 6,
+            boundaryMargin: const EdgeInsets.all(2000),
+            child: SizedBox(
+              width: width,
+              height: height,
+              child: ColoredBox(
+                color: Colors.black,
+                child: Center(
+                  child: Image.file(
+                    File(path),
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Icon(
+                      Icons.broken_image,
+                      color: Colors.white,
+                      size: 48,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
 }
 
 class _AttachmentChoice extends StatelessWidget {
