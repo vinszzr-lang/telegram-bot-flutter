@@ -3,6 +3,7 @@ import '../services/api.dart';
 import '../services/session.dart';
 import 'home_page.dart';
 import 'banned_page.dart';
+import '../services/notification_service.dart';
 
 
 class LoginPage extends StatefulWidget {
@@ -38,6 +39,8 @@ class _LoginPageState extends State<LoginPage> {
           ? await api.register(first.text.trim(), last.text.trim(), username.text.trim().toLowerCase(), password.text)
           : await api.login(username.text.trim().toLowerCase(), password.text);
       await widget.session.save(data);
+      await NotificationService.init();
+      await NotificationService.requestPermission();
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => HomePage(session: widget.session)),
@@ -72,7 +75,7 @@ class _LoginPageState extends State<LoginPage> {
                   const _Logo(),
                   const SizedBox(height: 18),
                   Text(
-                    register ? 'Buat akun ChatWithU' : 'Selamat datang kembali',
+                    register ? 'Buat akun X Chat' : 'Selamat datang kembali',
                     style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w700),
                     textAlign: TextAlign.center,
                   ),
@@ -161,7 +164,7 @@ class _Logo extends StatelessWidget {
           child: const Icon(Icons.chat_bubble_outline, size: 30),
         ),
         const SizedBox(width: 12),
-        const Text('ChatWithU', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
+        const Text('X Chat', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800)),
       ],
     );
   }

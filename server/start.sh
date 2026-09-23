@@ -1,4 +1,5 @@
 #!/bin/sh
 set -e
+export ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
 npm install --omit=dev
-node index.js
+exec node index.js

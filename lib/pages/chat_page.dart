@@ -18,6 +18,7 @@ import '../services/socket_service.dart';
 import '../utils/db.dart';
 import '../widgets/verified_badge.dart';
 import 'banned_page.dart';
+import 'contact_profile_page.dart';
 
 class ChatPage extends StatefulWidget {
   final Session session;
@@ -365,7 +366,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   Future<ui.Image> _decodeStickerImage(Uint8List bytes) async {
-    final codec = await ui.instantiateImageCodec(bytes, targetWidth: 512, targetHeight: 512);
+    final codec = await ui.instantiateImageCodec(bytes, targetWidth: 768);
     final frame = await codec.getNextFrame();
     return frame.image;
   }
@@ -374,31 +375,39 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     try {
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
-      const size = Size(512, 512);
+      Size canvasSize = const Size(512, 512);
+      ui.Image? sourceImage;
       if (photo != null) {
-        // Foto dari galeri dipertahankan apa adanya: tidak diberi background
-        // warna, tidak dicrop, dan aspect ratio asli tetap terjaga.
-        final image = await _decodeStickerImage(await photo.readAsBytes());
-        final src = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
-        const box = Rect.fromLTWH(0, 0, 512, 512);
-        final scale = math.min(box.width / image.width, box.height / image.height);
-        final w = image.width * scale;
-        final h = image.height * scale;
-        final dst = Rect.fromLTWH((512 - w) / 2, (512 - h) / 2, w, h);
-        canvas.drawImageRect(image, src, dst, Paint()..filterQuality = FilterQuality.high);
+        sourceImage = await _decodeStickerImage(await photo.readAsBytes());
+        final ratio = sourceImage.width / sourceImage.height;
+        if (ratio >= 1) {
+          canvasSize = Size(768, math.max(240, 768 / ratio));
+        } else {
+          canvasSize = Size(math.max(240, 768 * ratio), 768);
+        }
+      }
+      final bounds = Offset.zero & canvasSize;
+      if (sourceImage != null) {
+        final src = Rect.fromLTWH(0, 0, sourceImage.width.toDouble(), sourceImage.height.toDouble());
+        final scale = math.min(canvasSize.width / sourceImage.width, canvasSize.height / sourceImage.height);
+        final w = sourceImage.width * scale;
+        final h = sourceImage.height * scale;
+        final dst = Rect.fromLTWH((canvasSize.width - w) / 2, (canvasSize.height - h) / 2, w, h);
+        canvas.drawColor(Colors.transparent, BlendMode.clear);
+        canvas.drawImageRect(sourceImage, src, dst, Paint()..filterQuality = FilterQuality.high);
       } else {
         final bg = Paint()..color = background;
-        canvas.drawRRect(RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(64)), bg);
+        canvas.drawRRect(RRect.fromRectAndRadius(bounds, const Radius.circular(64)), bg);
         final painter = TextPainter(
-          text: TextSpan(text: text ?? 'ChatWithU', style: const TextStyle(color: Colors.white, fontSize: 62, fontWeight: FontWeight.w800, height: 1.05)),
+          text: TextSpan(text: text ?? 'X Chat', style: const TextStyle(color: Colors.white, fontSize: 62, fontWeight: FontWeight.w800, height: 1.05)),
           textAlign: TextAlign.center,
           textDirection: TextDirection.ltr,
           maxLines: 4,
-        )..layout(maxWidth: 430);
-        painter.paint(canvas, Offset((512 - painter.width) / 2, (512 - painter.height) / 2));
+        )..layout(maxWidth: canvasSize.width - 70);
+        painter.paint(canvas, Offset((canvasSize.width - painter.width) / 2, (canvasSize.height - painter.height) / 2));
       }
       final picture = recorder.endRecording();
-      final image = await picture.toImage(512, 512);
+      final image = await picture.toImage(canvasSize.width.round(), canvasSize.height.round());
       final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
       if (bytes == null) return null;
       final dir = await _stickerDirectory();
@@ -590,7 +599,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       resizeToAvoidBottomInset: false,
       appBar: AppBar(
         backgroundColor: const Color(0xFF10171A),
-        title: Row(
+        title: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ContactProfilePage(session: widget.session, user: widget.contact))),
+          child: Row(
           children: [
             CircleAvatar(
               radius: 19,
@@ -619,6 +631,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
               ),
             ),
           ],
+        ),
         ),
         actions: [
           PopupMenuButton<String>(
@@ -668,7 +681,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     );
   }
 
-  Widget _wallpaper(){if(wallpaperPath!=null&&wallpaperPath!.isNotEmpty&&File(wallpaperPath!).existsSync())return Image.file(File(wallpaperPath!),key:ValueKey(wallpaperPath),fit:BoxFit.cover);return Image.asset('assets/chat_background.jpg',fit:BoxFit.cover,alignment:Alignment.topCenter,filterQuality:FilterQuality.low);}
+  Widget _wallpaper(){if(wallpaperPath!=null&&wallpaperPath!.isNotEmpty&&File(wallpaperPath!).existsSync())return Image.file(File(wallpaperPath!),key:ValueKey(wallpaperPath),fit:BoxFit.cover);return Image.asset('assets/xchat_background.jpg',fit:BoxFit.cover,alignment:Alignment.topCenter,filterQuality:FilterQuality.low);}
   Widget _dayChip(dynamic v)=>Padding(padding:const EdgeInsets.symmetric(vertical:8),child:Container(padding:const EdgeInsets.symmetric(horizontal:12,vertical:6),decoration:BoxDecoration(color:const Color(0xFF1E292D),borderRadius:BorderRadius.circular(12)),child:Text(_dayLabel(v),style:const TextStyle(fontSize:12,color:Colors.white70))));
   String _dayKey(dynamic v){final d=DateTime.tryParse(v?.toString()??'')?.toLocal();return d==null?'':'${d.year}-${d.month}-${d.day}';}
   String _dayLabel(dynamic v){final d=DateTime.tryParse(v?.toString()??'')?.toLocal();if(d==null)return'';final n=DateTime.now();final diff=DateTime(n.year,n.month,n.day).difference(DateTime(d.year,d.month,d.day)).inDays;if(diff==0)return'Hari Ini';if(diff==1)return'Kemarin';const m=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];return'${d.day} ${m[d.month-1]} ${d.year}';}
@@ -702,8 +715,8 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           onDownload:()=>_downloadMediaToCache(message),
           onOpenImage:()=>_openImageViewer(url,message,localPath:downloaded?localPath:null),
           onOpenVideo:downloaded?()=>_openVideoViewer(localPath,message):null,
-          maxWidth:math.min(300,MediaQuery.sizeOf(context).width*.76),
-          maxHeight:360,
+          maxWidth:math.min(330,MediaQuery.sizeOf(context).width*.80),
+          maxHeight:450,
         ),
       );
     }
@@ -722,7 +735,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         onLongPress:!me&&downloaded?()=>_favoriteIncomingSticker(message):null,
         onTap:downloaded?()=>_showStickerActions(message):null,
         child:Stack(alignment:Alignment.center,children:[
-          Container(width:150,height:150,clipBehavior:Clip.antiAlias,decoration:BoxDecoration(borderRadius:BorderRadius.circular(18)),child:image),
+          ConstrainedBox(constraints:const BoxConstraints(maxWidth:190,maxHeight:190),child:ClipRRect(borderRadius:BorderRadius.circular(18),child:image)),
           if(!me&&!downloaded)_mediaDownloadButton(message,size),
         ]),
       );
@@ -1419,7 +1432,7 @@ class _ImageViewerPage extends StatelessWidget{
   final Map<String,dynamic> message;
   final VoidCallback onSave;
   const _ImageViewerPage({required this.path,required this.message,required this.onSave});
-  @override Widget build(BuildContext context)=>Scaffold(backgroundColor:Colors.black,appBar:AppBar(backgroundColor:Colors.black,title:const SizedBox.shrink(),actions:[IconButton(tooltip:'Simpan ke galeri',onPressed:onSave,icon:const Icon(Icons.download_rounded))]),body:Center(child:InteractiveViewer(minScale:.8,maxScale:4,child:Image.file(File(path),fit:BoxFit.contain,errorBuilder:(_,__,___)=>const Icon(Icons.broken_image,color:Colors.white,size:48)))));
+  @override Widget build(BuildContext context)=>Scaffold(backgroundColor:Colors.black,appBar:AppBar(backgroundColor:Colors.black,title:const SizedBox.shrink(),actions:[IconButton(tooltip:'Simpan ke galeri',onPressed:onSave,icon:const Icon(Icons.download_rounded))]),body:Center(child:InteractiveViewer(constrained:false,clipBehavior:Clip.none,minScale:.5,maxScale:6,child:Image.file(File(path),errorBuilder:(_,__,___)=>const Icon(Icons.broken_image,color:Colors.white,size:48)))));
 }
 
 class _AttachmentChoice extends StatelessWidget {

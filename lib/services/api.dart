@@ -144,6 +144,59 @@ class Api {
   Future<Map<String, dynamic>> findUser(String token, String username) async =>
       Map<String, dynamic>.from(await request('GET', '/api/users/${Uri.encodeComponent(username)}', token: token));
 
+
+  Future<List<dynamic>> groups(String token) async => List<dynamic>.from(await request('GET', '/api/groups', token: token));
+
+  Future<Map<String, dynamic>> group(String token, String groupId) async => Map<String, dynamic>.from(await request('GET', '/api/groups/${Uri.encodeComponent(groupId)}', token: token));
+
+  Future<Map<String, dynamic>> createGroup(String token, String name, String description, List<String> members) async => Map<String, dynamic>.from(await request('POST', '/api/groups', token: token, body: {'name': name, 'description': description, 'members': members}));
+
+  Future<Map<String, dynamic>> uploadGroupAvatar(String token, String groupId, File file) async {
+    final req = http.MultipartRequest('POST', uri('/api/groups/${Uri.encodeComponent(groupId)}/avatar'));
+    req.headers['Authorization'] = 'Bearer $token';
+    req.files.add(await http.MultipartFile.fromPath('file', file.path));
+    final res = await req.send();
+    final text = await res.stream.bytesToString();
+    dynamic data; try { data = jsonDecode(text); } catch (_) { data = {'message': text}; }
+    if (res.statusCode < 200 || res.statusCode >= 300) throw ApiException(res.statusCode, (data is Map ? (data['message'] ?? 'Upload gagal') : 'Upload gagal').toString());
+    return Map<String,dynamic>.from(data as Map);
+  }
+
+  Future<List<dynamic>> groupMessages(String token, String groupId, {String? since}) async {
+    final query = since == null ? '' : '?since=${Uri.encodeQueryComponent(since)}';
+    return List<dynamic>.from(await request('GET', '/api/groups/${Uri.encodeComponent(groupId)}/messages$query', token: token));
+  }
+
+  Future<Map<String, dynamic>> sendGroupMessage(String token, String groupId, String message) async => Map<String, dynamic>.from(await request('POST', '/api/groups/${Uri.encodeComponent(groupId)}/messages', token: token, body: {'message': message}));
+
+  Future<Map<String, dynamic>> uploadGroupMedia(String token, String groupId, File file, {String type = 'image', String? caption}) async {
+    final req = http.MultipartRequest('POST', uri('/api/groups/${Uri.encodeComponent(groupId)}/media'));
+    req.headers['Authorization'] = 'Bearer $token';
+    req.fields['type'] = type;
+    if (caption != null) req.fields['caption'] = caption;
+    req.files.add(await http.MultipartFile.fromPath('file', file.path));
+    final res = await req.send();
+    final text = await res.stream.bytesToString();
+    dynamic data;
+    try { data = jsonDecode(text); } catch (_) { data = {'message': text}; }
+    if (res.statusCode < 200 || res.statusCode >= 300) throw ApiException(res.statusCode, (data is Map ? (data['message'] ?? 'Upload gagal') : 'Upload gagal').toString());
+    return Map<String, dynamic>.from(data as Map);
+  }
+
+  Future<void> markGroupRead(String token, String groupId) async => await request('POST', '/api/groups/${Uri.encodeComponent(groupId)}/read', token: token);
+
+  Future<void> setGroupTyping(String token, String groupId, bool typing) async => await request('POST', '/api/groups/${Uri.encodeComponent(groupId)}/typing', token: token, body: {'typing': typing});
+
+  Future<Map<String, dynamic>> addGroupMembers(String token, String groupId, List<String> members) async => Map<String, dynamic>.from(await request('POST', '/api/groups/${Uri.encodeComponent(groupId)}/members', token: token, body: {'members': members}));
+
+  Future<void> removeGroupMember(String token, String groupId, String username) async => await request('DELETE', '/api/groups/${Uri.encodeComponent(groupId)}/members/${Uri.encodeComponent(username)}', token: token);
+
+  Future<void> setGroupRole(String token, String groupId, String username, String role) async => await request('PATCH', '/api/groups/${Uri.encodeComponent(groupId)}/members/${Uri.encodeComponent(username)}/role', token: token, body: {'role': role});
+
+  Future<Map<String, dynamic>> updateGroupSettings(String token, String groupId, {String? name, String? description, bool? onlyAdminsManage}) async => Map<String, dynamic>.from(await request('PATCH', '/api/groups/${Uri.encodeComponent(groupId)}/settings', token: token, body: {'name': name, 'description': description, 'onlyAdminsManage': onlyAdminsManage}));
+
+  Future<void> leaveGroup(String token, String groupId) async => await request('POST', '/api/groups/${Uri.encodeComponent(groupId)}/leave', token: token);
+
   Future<List<dynamic>> contacts(String token) async => List<dynamic>.from(await request('GET', '/api/contacts', token: token));
   Future<List<dynamic>> inbox(String token) async => List<dynamic>.from(await request('GET', '/api/inbox', token: token));
 

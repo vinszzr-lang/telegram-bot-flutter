@@ -1,16 +1,9 @@
-# ChatWithU build status
+# X Chat Build Notes
 
-## READY_BUILD_V2
-- Flutter Android project configured for Flutter 3.47.4 / Java 17 / AGP 8.11.1 / Kotlin 2.2.20.
-- Kotlin compiler uses `compilerOptions.jvmTarget = JVM_17`.
-- Media composer has direct Photo, Video, Camera, and File actions.
-- Photo selection uses `image_picker` directly and shows a preview before upload.
-- Android CAMERA permission added for camera capture.
-- Backend validates image/video MIME types.
-- Admin dashboard available at `/admin`; verified, badges, ban/unban are supported.
-- GitHub Actions keeps release split-ABI build and ignores informational analyzer lints.
-
-## Validation
-- `node --check server/index.js`: PASS.
-- ZIP structure/integrity: PASS.
-- Flutter/Dart compile could not be executed in this environment because Flutter SDK is not installed.
+- App label: X Chat
+- Version: 2.0.0+8
+- GitHub server bootstrap remains at the existing `server.json` URL in `lib/services/api.dart`.
+- The app stores the last known server locally and refreshes GitHub only at startup or after infrastructure/network failure.
+- Group chat, group media, profiles, verified badge animation, notification permission, and native local notifications were added.
+- Local Flutter SDK was not available in this environment, so a real `flutter analyze` / `flutter build apk` run could not be performed here.
+- Server JavaScript syntax was verified with `node --check`.

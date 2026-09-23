@@ -1,7 +1,7 @@
-name: chatwithu
-description: "ChatWithU - private realtime messaging client"
+name: x_chat
+description: "X Chat - private realtime messaging client"
 publish_to: "none"
-version: 1.3.0+7
+version: 2.0.0+8
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
@@ -29,3 +29,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/chat_background.jpg
+    - assets/xchat_background.jpg

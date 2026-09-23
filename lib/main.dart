@@ -23,7 +23,7 @@ class ChatWithUApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       navigatorObservers: [chatWithURouteObserver],
-      title: 'ChatWithU',
+      title: 'X Chat',
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF080D10),

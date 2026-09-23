@@ -12,8 +12,8 @@ android {
         applicationId = "com.vinzz.chatwithu"
         minSdk = 24
         targetSdk = flutter.targetSdkVersion
-        versionCode = 7
-        versionName = "1.3.0"
+        versionCode = 8
+        versionName = "2.0.0"
     }
 
     compileOptions {
