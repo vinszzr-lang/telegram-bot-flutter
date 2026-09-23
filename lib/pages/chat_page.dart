@@ -701,7 +701,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           downloading:_downloadingMedia.contains(id),
           onDownload:()=>_downloadMediaToCache(message),
           onOpenImage:()=>_openImageViewer(url,message,localPath:downloaded?localPath:null),
-          onOpenVideo:downloaded&&localPath!=null?()=>_openVideoViewer(localPath,message):null,
+          onOpenVideo:downloaded?()=>_openVideoViewer(localPath,message):null,
           maxWidth:math.min(300,MediaQuery.sizeOf(context).width*.76),
           maxHeight:360,
         ),
@@ -992,7 +992,7 @@ class _MediaMessageBubbleState extends State<_MediaMessageBubble> {
 
   void _resolveImage(){
     _imageStream?.removeListener(_imageListener!);
-    final provider=widget.localPath!=null
+    final ImageProvider provider=widget.localPath!=null
         ? FileImage(File(widget.localPath!))
         : NetworkImage(widget.previewUrl);
     final stream=provider.resolve(const ImageConfiguration());
@@ -1097,10 +1097,17 @@ class _MediaMessageBubbleState extends State<_MediaMessageBubble> {
   Widget _ticks(String status){
     IconData icon=Icons.check;
     Color color=Colors.white54;
-    if(status=='failed'){icon=Icons.close;color=Colors.redAccent;}
-    else if(status=='read'){icon=Icons.done_all;color=const Color(0xFF53BDEB);}
-    else if(status=='sent'||status=='delivered'){icon=Icons.done_all;}
-    else if(status=='sending')return const SizedBox(width:15,height:15,child:Padding(padding:EdgeInsets.all(2),child:CircularProgressIndicator(strokeWidth:1.6)));
+    if(status=='failed'){
+      icon=Icons.close;
+      color=Colors.redAccent;
+    }else if(status=='read'){
+      icon=Icons.done_all;
+      color=const Color(0xFF53BDEB);
+    }else if(status=='sent'||status=='delivered'){
+      icon=Icons.done_all;
+    }else if(status=='sending'){
+      return const SizedBox(width:15,height:15,child:Padding(padding:EdgeInsets.all(2),child:CircularProgressIndicator(strokeWidth:1.6)));
+    }
     return Icon(icon,color:color,size:15);
   }
 }
