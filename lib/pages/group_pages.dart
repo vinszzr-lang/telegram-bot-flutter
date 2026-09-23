@@ -215,10 +215,10 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
               onPressed: () async {
                 try {
                   await api.leaveGroup(widget.session.token!, widget.groupId);
-                  if (!mounted) return;
+                  if (!context.mounted) return;
                   Navigator.pop(context, true);
                 } catch (e) {
-                  if (!mounted) return;
+                  if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
                 }
               },

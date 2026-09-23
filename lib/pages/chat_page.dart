@@ -51,6 +51,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   final List<String> _stickers = <String>[];
   bool _showStickerTray = false;
   final Set<String> _selectedIds = <String>{};
+  final Map<String, double> _swipeOffsets = <String, double>{};
   Map<String,dynamic>? _replyingTo;
   bool get _isSavedContact => widget.contact['saved'] == true;
 
