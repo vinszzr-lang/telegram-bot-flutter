@@ -146,10 +146,10 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
             Navigator.pop(c);
             try {
               final next = await api.addGroupMembers(widget.session.token!, widget.groupId, picked.toList());
-              if (!context.mounted) return;
+              if (!mounted) return;
               setState(() => group = next);
             } catch (e) {
-              if (!context.mounted) return;
+              if (!mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
             }
           },
@@ -215,10 +215,10 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
               onPressed: () async {
                 try {
                   await api.leaveGroup(widget.session.token!, widget.groupId);
-                  if (!context.mounted) return;
+                  if (!mounted) return;
                   Navigator.pop(context, true);
                 } catch (e) {
-                  if (!context.mounted) return;
+                  if (!mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
                 }
               },

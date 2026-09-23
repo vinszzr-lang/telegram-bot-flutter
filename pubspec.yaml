@@ -1,7 +1,7 @@
 name: x_chat
 description: "X Chat - private realtime messaging client"
 publish_to: "none"
-version: 2.1.0+9
+version: 5.0.1+10
 
 environment:
   sdk: ">=3.10.0 <4.0.0"

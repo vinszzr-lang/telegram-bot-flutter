@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -575,11 +574,11 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   void _startReply(Map<String,dynamic> m) { setState(() => _replyingTo = m); }
-  void _toggleSelect(Map<String,dynamic> m) { final id=m['id']?.toString(); if(id==null)return; setState(() { if(_selectedIds.contains(id)) _selectedIds.remove(id); else _selectedIds.add(id); }); }
+  void _toggleSelect(Map<String,dynamic> m) { final id=m['id']?.toString(); if (id == null) return; setState(() { if (_selectedIds.contains(id)) { _selectedIds.remove(id); } else { _selectedIds.add(id); } }); }
   void _longSelect(Map<String,dynamic> m) { if(_selectedIds.isEmpty){final id=m['id']?.toString();if(id!=null)setState(()=>_selectedIds.add(id));}else{_toggleSelect(m);} }
   Future<void> _copySelected() async { final texts=messages.where((m)=>_selectedIds.contains(m['id']?.toString())&&m['type']=='text'&&m['deleted']!=true).map((m)=>m['message']?.toString()??'').where((x)=>x.isNotEmpty).toList(); if(texts.isEmpty)return; await Clipboard.setData(ClipboardData(text:texts.join('\n'))); if(mounted){setState(()=>_selectedIds.clear());ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Pesan disalin')));} }
   Future<void> _deleteSelected() async { final ids=_selectedIds.toList(); for(final id in ids){final m=messages.firstWhere((x)=>x['id']?.toString()==id,orElse:()=>{});if(m.isEmpty||m['senderUsername']?.toString()!=widget.session.username)continue;try{await api.deleteChatMessage(widget.session.token!,username,id);}catch(_){}} _selectedIds.clear(); await syncMessages(full:true); if(mounted)setState((){}); }
-  Widget _quotedMessage(Map<String,dynamic>? m){if(m==null)return const SizedBox.shrink();final type=m['type']?.toString()??'text';final text=type=='text'?(m['message']??'').toString():type=='image'?'Foto':type=='video'?'Video':type=='sticker'?'Sticker':type=='file'?'File':'Pesan';final sender=m['senderUsername']?.toString()==widget.session.username?'Anda':contactName;return Container(width:double.infinity,margin:const EdgeInsets.only(bottom:6),padding:const EdgeInsets.fromLTRB(9,6,8,6),decoration:BoxDecoration(color:Colors.black.withOpacity(.16),borderRadius:BorderRadius.circular(8),border:const Border(left:BorderSide(color:Color(0xFF58D68D),width:3))),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text(sender,style:const TextStyle(color:Color(0xFF62D696),fontWeight:FontWeight.w800,fontSize:12)),Text(text,maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(color:Colors.white70,fontSize:12))]));}
+  Widget _quotedMessage(Map<String,dynamic>? m){if(m==null)return const SizedBox.shrink();final type=m['type']?.toString()??'text';final text=type=='text'?(m['message']??'').toString():type=='image'?'Foto':type=='video'?'Video':type=='sticker'?'Sticker':type=='file'?'File':'Pesan';final sender=m['senderUsername']?.toString()==widget.session.username?'Anda':contactName;return Container(width:double.infinity,margin:const EdgeInsets.only(bottom:6),padding:const EdgeInsets.fromLTRB(9,6,8,6),decoration:BoxDecoration(color:Colors.black.withValues(alpha: .16),borderRadius:BorderRadius.circular(8),border:const Border(left:BorderSide(color:Color(0xFF58D68D),width:3))),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text(sender,style:const TextStyle(color:Color(0xFF62D696),fontWeight:FontWeight.w800,fontSize:12)),Text(text,maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(color:Colors.white70,fontSize:12))]));}
 
   Future<void> _rename() async {
     if (!_isSavedContact) { await _addUnknownContact(); return; }
@@ -727,7 +726,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           ),
           Positioned(left: 0, right: 0, bottom: keyboard, child: SafeArea(bottom: true, top: false, child: _composer())),
         ],)),
-      ],
+      ]),
     );
   }
 

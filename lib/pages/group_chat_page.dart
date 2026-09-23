@@ -217,7 +217,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final p = await SharedPreferences.getInstance();
     final values = p.getStringList('chatwithu_stickers_${(widget.session.username ?? '')}') ?? <String>[];
     final valid = <String>[];
-    for (final x in values) if (await File(x).exists()) valid.add(x);
+    for (final x in values) { if (await File(x).exists()) { valid.add(x); } }
     if (mounted) setState(() { stickers..clear()..addAll(valid); });
     if (valid.length != values.length) await p.setStringList('chatwithu_stickers_${(widget.session.username ?? '')}', valid);
   }
@@ -289,7 +289,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final id = m['id']?.toString();
     if (id == null) return;
     setState(() {
-      if (selected.contains(id)) selected.remove(id); else selected.add(id);
+      if (selected.contains(id)) { selected.remove(id); } else { selected.add(id); }
     });
   }
 
@@ -327,7 +327,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!scroll.hasClients) return;
       final t = scroll.position.maxScrollExtent;
-      if (jump) scroll.jumpTo(t); else scroll.animateTo(t, duration: const Duration(milliseconds: 140), curve: Curves.easeOut);
+      if (jump) { scroll.jumpTo(t); } else { scroll.animateTo(t, duration: const Duration(milliseconds: 140), curve: Curves.easeOut); }
     });
   }
 
@@ -358,7 +358,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     if (reply == null) return const SizedBox.shrink();
     final type = reply['type']?.toString() ?? 'text';
     final text = type == 'text' ? (reply['message'] ?? '').toString() : type == 'image' ? 'Foto' : type == 'video' ? 'Video' : type == 'sticker' ? 'Sticker' : type == 'poll' ? 'Polling' : 'File';
-    return Container(width: double.infinity, margin: const EdgeInsets.only(bottom: 6), padding: const EdgeInsets.fromLTRB(9, 6, 8, 6), decoration: BoxDecoration(color: Colors.black.withOpacity(.16), borderRadius: BorderRadius.circular(8), border: const Border(left: BorderSide(color: Color(0xFF58D68D), width: 3))), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(_replyLabel(reply), style: const TextStyle(color: Color(0xFF62D696), fontWeight: FontWeight.w800, fontSize: 12)), Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white70, fontSize: 12))]));
+    return Container(width: double.infinity, margin: const EdgeInsets.only(bottom: 6), padding: const EdgeInsets.fromLTRB(9, 6, 8, 6), decoration: BoxDecoration(color: Colors.black.withValues(alpha: .16), borderRadius: BorderRadius.circular(8), border: const Border(left: BorderSide(color: Color(0xFF58D68D), width: 3))), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(_replyLabel(reply), style: const TextStyle(color: Color(0xFF62D696), fontWeight: FontWeight.w800, fontSize: 12)), Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white70, fontSize: 12))]));
   }
 
   Widget _messageMedia(Map<String, dynamic> m) {
@@ -437,18 +437,225 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
   Future<void> _createPoll() async {
     final q = TextEditingController();
-    final options = <TextEditingController>[TextEditingController(), TextEditingController()];
-    final result = await showDialog<List<String>>(context: context, builder: (c) => StatefulBuilder(builder: (c, set) => AlertDialog(title: const Text('Buat Polling'), content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: q, decoration: const InputDecoration(labelText: 'Judul polling')), const SizedBox(height: 10), ...List.generate(options.length, (i) => Padding(padding: const EdgeInsets.only(bottom: 8), child: Row(children: [Expanded(child: TextField(controller: options[i], decoration: InputDecoration(labelText: 'Pilihan ${i + 1}'))), if (i >= 2) IconButton(onPressed: () => set(() => options.removeAt(i)), icon: const Icon(Icons.remove_circle_outline))]))), Align(alignment: Alignment.centerLeft, child: TextButton.icon(onPressed: () => set(() => options.add(TextEditingController())), icon: const Icon(Icons.add), label: const Text('Tambah pilihan'))])), actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('Batal')), FilledButton(onPressed: () { final out = options.map((x) => x.text.trim()).where((x) => x.isNotEmpty).toList(); if (q.text.trim().isNotEmpty && out.length >= 2) Navigator.pop(c, out); }, child: const Text('Buat'))]));
+    final options = <TextEditingController>[
+      TextEditingController(),
+      TextEditingController(),
+    ];
+
+    final result = await showDialog<List<String>>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              title: const Text('Buat Polling'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: q,
+                      decoration: const InputDecoration(labelText: 'Judul polling'),
+                    ),
+                    const SizedBox(height: 10),
+                    ...List.generate(options.length, (i) {
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: options[i],
+                                decoration: InputDecoration(labelText: 'Pilihan ${i + 1}'),
+                              ),
+                            ),
+                            if (i >= 2)
+                              IconButton(
+                                onPressed: () {
+                                  final removed = options.removeAt(i);
+                                  removed.dispose();
+                                  setDialogState(() {});
+                                },
+                                icon: const Icon(Icons.remove_circle_outline),
+                              ),
+                          ],
+                        ),
+                      );
+                    }),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: () {
+                          options.add(TextEditingController());
+                          setDialogState(() {});
+                        },
+                        icon: const Icon(Icons.add),
+                        label: const Text('Tambah pilihan'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Batal'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final out = options
+                        .map((x) => x.text.trim())
+                        .where((x) => x.isNotEmpty)
+                        .toList();
+                    if (q.text.trim().isNotEmpty && out.length >= 2) {
+                      Navigator.pop(dialogContext, out);
+                    }
+                  },
+                  child: const Text('Buat'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
     final question = q.text.trim();
     q.dispose();
-    for (final x in options) x.dispose();
-    if (result == null || question.isEmpty) return;
-    try { final r = await api.createGroupPoll(widget.session.token!, group['id'].toString(), question, result); _merge([r]); if (mounted) setState(() {}); _bottom(); } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e'))); }
+    for (final controller in options) {
+      controller.dispose();
+    }
+    if (result == null || question.isEmpty || !mounted) return;
+
+    try {
+      final r = await api.createGroupPoll(
+        widget.session.token!,
+        group['id'].toString(),
+        question,
+        result,
+      );
+      _merge([r]);
+      if (mounted) {
+        setState(() {});
+        _bottom();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
   }
 
-  Widget _stickerTray() => Container(height: 145, color: const Color(0xFF151C20), child: Row(children: [IconButton(onPressed: _makeSticker, icon: const Icon(Icons.add_circle_outline)), Expanded(child: stickers.isEmpty ? const Center(child: Text('Buat sticker dari galeri')) : ListView.separated(scrollDirection: Axis.horizontal, padding: const EdgeInsets.all(8), itemCount: stickers.length, separatorBuilder: (_, __) => const SizedBox(width: 8), itemBuilder: (_, i) => GestureDetector(onTap: () => _sendSticker(stickers[i]), child: Container(width: 110, padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: const Color(0xFF20282C), borderRadius: BorderRadius.circular(14)), child: Image.file(File(stickers[i]), fit: BoxFit.contain)))))]));
+  Widget _stickerTray() {
+    return Container(
+      height: 145,
+      color: const Color(0xFF151C20),
+      child: Row(
+        children: [
+          IconButton(onPressed: _makeSticker, icon: const Icon(Icons.add_circle_outline)),
+          Expanded(
+            child: stickers.isEmpty
+                ? const Center(child: Text('Buat sticker dari galeri'))
+                : ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.all(8),
+                    itemCount: stickers.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (_, i) {
+                      return GestureDetector(
+                        onTap: () => _sendSticker(stickers[i]),
+                        child: Container(
+                          width: 110,
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF20282C),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Image.file(File(stickers[i]), fit: BoxFit.contain),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
 
-  Widget _composer() => Column(mainAxisSize: MainAxisSize.min, children: [if (replyingTo != null) Container(color: const Color(0xFF121B1E), padding: const EdgeInsets.fromLTRB(12, 8, 8, 8), child: Row(children: [Expanded(child: _quoted(replyingTo)), IconButton(onPressed: () => setState(() => replyingTo = null), icon: const Icon(Icons.close))])), if (showStickers) _stickerTray(), Container(color: const Color(0xEE10171A), padding: const EdgeInsets.fromLTRB(5, 6, 7, 7), child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [IconButton(onPressed: sending ? null : () => _attachments(), icon: const Icon(Icons.add_circle_outline)), IconButton(onPressed: sending ? null : () => setState(() => showStickers = !showStickers), icon: const Icon(Icons.sticky_note_2_outlined)), Expanded(child: TextField(controller: input, minLines: 1, maxLines: 5, decoration: InputDecoration(hintText: 'Pesan grup', filled: true, fillColor: const Color(0xFF1B2529), border: OutlineInputBorder(borderSide: BorderSide.none, borderRadius: BorderRadius.circular(22)), contentPadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11))),), IconButton(tooltip: 'Polling', onPressed: sending ? null : _createPoll, icon: const Icon(Icons.poll_outlined)), const SizedBox(width: 3), Material(color: const Color(0xFF20C76B), shape: const CircleBorder(), child: InkWell(onTap: sending ? null : _sendText, customBorder: const CircleBorder(), child: const Padding(padding: EdgeInsets.all(12), child: Icon(Icons.send_rounded, color: Colors.black, size: 21))))]));
+  Widget _composer() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (replyingTo != null)
+          Container(
+            color: const Color(0xFF121B1E),
+            padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+            child: Row(
+              children: [
+                Expanded(child: _quoted(replyingTo)),
+                IconButton(
+                  onPressed: () => setState(() => replyingTo = null),
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
+          ),
+        if (showStickers) _stickerTray(),
+        Container(
+          color: const Color(0xEE10171A),
+          padding: const EdgeInsets.fromLTRB(5, 6, 7, 7),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              IconButton(
+                onPressed: sending ? null : _attachments,
+                icon: const Icon(Icons.add_circle_outline),
+              ),
+              IconButton(
+                onPressed: sending ? null : () => setState(() => showStickers = !showStickers),
+                icon: const Icon(Icons.sticky_note_2_outlined),
+              ),
+              Expanded(
+                child: TextField(
+                  controller: input,
+                  minLines: 1,
+                  maxLines: 5,
+                  decoration: InputDecoration(
+                    hintText: 'Pesan grup',
+                    filled: true,
+                    fillColor: const Color(0xFF1B2529),
+                    border: OutlineInputBorder(
+                      borderSide: BorderSide.none,
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Polling',
+                onPressed: sending ? null : _createPoll,
+                icon: const Icon(Icons.poll_outlined),
+              ),
+              const SizedBox(width: 3),
+              Material(
+                color: const Color(0xFF20C76B),
+                shape: const CircleBorder(),
+                child: InkWell(
+                  onTap: sending ? null : _sendText,
+                  customBorder: const CircleBorder(),
+                  child: const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Icon(Icons.send_rounded, color: Colors.black, size: 21),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 
   Future<void> _attachments() async {
     final choice = await showModalBottomSheet<String>(context: context, backgroundColor: const Color(0xFF10171A), builder: (c) => SafeArea(child: Padding(padding: const EdgeInsets.fromLTRB(12, 12, 12, 18), child: Column(mainAxisSize: MainAxisSize.min, children: [const Align(alignment: Alignment.centerLeft, child: Text('Kirim lampiran', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800))), const SizedBox(height: 12), Row(children: [_choice(c, Icons.photo_rounded, 'Foto', 'image'), _choice(c, Icons.videocam_rounded, 'Video', 'video'), _choice(c, Icons.description_rounded, 'File', 'file'), _choice(c, Icons.sticky_note_2_outlined, 'Sticker', 'sticker')])]))));
@@ -457,13 +664,121 @@ class _GroupChatPageState extends State<GroupChatPage> {
     await _pickMedia(type: choice);
   }
 
-  Widget _choice(BuildContext c, IconData icon, String label, String value) => Expanded(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: InkWell(onTap: () => Navigator.pop(c, value), borderRadius: BorderRadius.circular(16), child: Container(height: 82, decoration: BoxDecoration(color: const Color(0xFF1B2529), borderRadius: BorderRadius.circular(16)), child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(icon), const SizedBox(height: 5), Text(label)]))));
+  Widget _choice(BuildContext c, IconData icon, String label, String value) => Expanded(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: InkWell(onTap: () => Navigator.pop(c, value), borderRadius: BorderRadius.circular(16), child: Container(height: 82, decoration: BoxDecoration(color: const Color(0xFF1B2529), borderRadius: BorderRadius.circular(16)), child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(icon), const SizedBox(height: 5), Text(label)])))));
 
-  Widget _selectionBar() => AppBar(backgroundColor: const Color(0xFF10171A), leading: IconButton(onPressed: () => setState(() => selected.clear()), icon: const Icon(Icons.close)), title: Text('${selected.length} dipilih'), actions: [if (messages.where((m) => selected.contains(m['id']?.toString()) && m['type'] == 'text').isNotEmpty) IconButton(onPressed: _copySelected, icon: const Icon(Icons.copy_outlined)), IconButton(onPressed: _deleteSelected, icon: const Icon(Icons.delete_outline))]);
+  PreferredSizeWidget _selectionBar() => AppBar(backgroundColor: const Color(0xFF10171A), leading: IconButton(onPressed: () => setState(() => selected.clear()), icon: const Icon(Icons.close)), title: Text('${selected.length} dipilih'), actions: [if (messages.where((m) => selected.contains(m['id']?.toString()) && m['type'] == 'text').isNotEmpty) IconButton(onPressed: _copySelected, icon: const Icon(Icons.copy_outlined)), IconButton(onPressed: _deleteSelected, icon: const Icon(Icons.delete_outline))]);
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(backgroundColor: const Color(0xFF080D10), appBar: selected.isNotEmpty ? _selectionBar() : AppBar(backgroundColor: const Color(0xFF10171A), title: InkWell(onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupInfoPage(session: widget.session, groupId: group['id'].toString()))), child: Row(children: [CircleAvatar(radius: 18, backgroundColor: const Color(0xFF2D2039), backgroundImage: (group['avatarUrl'] ?? '').toString().isNotEmpty ? NetworkImage(group['avatarUrl'].toString()) : null, child: (group['avatarUrl'] ?? '').toString().isEmpty ? Text(group['name'].toString().isEmpty ? '?' : group['name'].toString()[0].toUpperCase()) : null), const SizedBox(width: 9), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(group['name'].toString(), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800), overflow: TextOverflow.ellipsis), AnimatedSwitcher(duration: const Duration(milliseconds: 180), child: remoteTyping ? const Text('Mengetik...', style: TextStyle(fontSize: 11, color: Color(0xFF5FD18A))) : Text(_memberSubtitle(), style: const TextStyle(fontSize: 11, color: Colors.white54)))]))])), actions: [IconButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => GroupInfoPage(session: widget.session, groupId: group['id'].toString())),), icon: const Icon(Icons.info_outline_rounded))]), body: Stack(children: [Positioned.fill(child: Image.asset('assets/xchat_background.jpg', fit: BoxFit.cover)), Positioned.fill(child: Container(color: const Color(0xD9080D10))), Positioned.fill(child: Padding(padding: const EdgeInsets.only(bottom: 76), child: ListView.builder(controller: scroll, padding: const EdgeInsets.fromLTRB(10, 12, 10, 12), itemCount: messages.length, itemBuilder: (_, i) { final m = messages[i]; return _bubble(m); }))), Positioned(left: 0, right: 0, bottom: 0, child: SafeArea(top: false, child: _composer()))]));
+    final appBar = selected.isNotEmpty
+        ? _selectionBar()
+        : AppBar(
+            backgroundColor: const Color(0xFF10171A),
+            title: InkWell(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => GroupInfoPage(
+                      session: widget.session,
+                      groupId: group['id'].toString(),
+                    ),
+                  ),
+                );
+              },
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: const Color(0xFF2D2039),
+                    backgroundImage: (group['avatarUrl'] ?? '').toString().isNotEmpty
+                        ? NetworkImage(group['avatarUrl'].toString())
+                        : null,
+                    child: (group['avatarUrl'] ?? '').toString().isEmpty
+                        ? Text(
+                            group['name'].toString().isEmpty
+                                ? '?'
+                                : group['name'].toString()[0].toUpperCase(),
+                          )
+                        : null,
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          group['name'].toString(),
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 180),
+                          child: remoteTyping
+                              ? const Text(
+                                  'Mengetik...',
+                                  style: TextStyle(fontSize: 11, color: Color(0xFF5FD18A)),
+                                )
+                              : Text(
+                                  _memberSubtitle(),
+                                  style: const TextStyle(fontSize: 11, color: Colors.white54),
+                                ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              IconButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => GroupInfoPage(
+                        session: widget.session,
+                        groupId: group['id'].toString(),
+                      ),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.info_outline_rounded),
+              ),
+            ],
+          );
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF080D10),
+      appBar: appBar,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: Image.asset('assets/xchat_background.jpg', fit: BoxFit.cover),
+          ),
+          Positioned.fill(
+            child: Container(color: const Color(0xD9080D10)),
+          ),
+          Positioned.fill(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 76),
+              child: ListView.builder(
+                controller: scroll,
+                padding: const EdgeInsets.fromLTRB(10, 12, 10, 12),
+                itemCount: messages.length,
+                itemBuilder: (_, i) => _bubble(messages[i]),
+              ),
+            ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: SafeArea(top: false, child: _composer()),
+          ),
+        ],
+      ),
+    );
   }
 
   @override

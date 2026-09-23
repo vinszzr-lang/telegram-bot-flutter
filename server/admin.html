@@ -2,7 +2,7 @@
 <html lang="id">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>X Chat • Command Center</title>
+<title>X Chat Pro • Command Center</title>
 <style>
 :root{--bg:#060810;--panel:#0c1120;--panel2:#10182a;--line:#202a40;--text:#f4f7ff;--muted:#8e9ab3;--accent:#7c5cff;--accent2:#2de2b1;--red:#ff5571;--yellow:#ffd166;--blue:#55a8ff;--shadow:0 30px 90px #0009;--radius:22px}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(900px 600px at 10% -5%,#30226b55,transparent 60%),radial-gradient(800px 500px at 100% 0%,#0b7d7050,transparent 60%),var(--bg);color:var(--text);font:14px Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh;overflow-x:hidden}
@@ -40,12 +40,13 @@ button,input,textarea,select{font:inherit}.hidden{display:none!important}.muted{
 
 <div id="app" class="shell hidden">
 <aside class="side">
-  <div class="side-top"><div class="mini-logo">CU</div><div><div class="side-title">X Chat</div><div class="muted" style="font-size:11px">Command Center</div></div></div>
+  <div class="side-top"><div class="mini-logo">CU</div><div><div class="side-title">X Chat <span style="color:var(--accent2)">PRO</span></div><div class="muted" style="font-size:11px">Command Center</div></div></div>
   <div class="nav">
     <button data-page="overview" class="active" onclick="page('overview',this)">◈ <span>Overview</span></button>
     <button data-page="users" onclick="page('users',this)">◎ <span>Users</span></button>
     <button data-page="messages" onclick="page('messages',this)">▣ <span>Messages</span></button>
     <button data-page="activity" onclick="page('activity',this)">◷ <span>Activity</span></button>
+    <button data-page="system" onclick="page('system',this)">✦ <span>System Live</span></button>
     <button data-page="settings" onclick="page('settings',this)">⚙ <span>Settings</span></button>
     <button data-page="admins" id="adminsNav" class="hidden" onclick="page('admins',this)">♛ <span>Admin Accounts</span></button>
   </div>
@@ -64,7 +65,7 @@ function toast(s,good=true){$('toast').textContent=s;$('toast').classList.remove
 async function login(){try{const r=await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('au').value.trim(),password:$('ap').value})});const d=await r.json();if(!r.ok)throw new Error(d.message);token=d.token;localStorage.setItem('cwu_admin_v4',token);await boot()}catch(e){$('loginErr').textContent=e.message}}
 function logout(){localStorage.removeItem('cwu_admin_v4');token='';location.reload()}
 async function boot(){if(!token)return;$('login').classList.add('hidden');$('app').classList.remove('hidden');try{const me=await api('/api/admin/me');myRole=me.role||'admin';$('adminName').textContent=me.username+' · '+myRole;document.querySelector('#adminsNav').classList.toggle('hidden',myRole!=='developer');page('overview',document.querySelector('[data-page="overview"]'))}catch{logout()}}
-function page(p,el){currentPage=p;document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');({overview:renderOverview,users:renderUsers,messages:renderMessages,activity:renderActivity,settings:renderSettings,admins:renderAdmins}[p]||renderOverview)();anim()}
+function page(p,el){currentPage=p;document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');({overview:renderOverview,users:renderUsers,messages:renderMessages,activity:renderActivity,system:renderSystem,settings:renderSettings,admins:renderAdmins}[p]||renderOverview)();anim()}
 let liveBusy=false;
 let liveCache={overview:null,users:null,messages:null,activity:null};
 function stableUsers(items){return JSON.stringify((items||[]).map(u=>({username:u.username,firstName:u.firstName,lastName:u.lastName,bio:u.bio,verified:u.verified,banned:u.banned,badges:u.badges||[],createdAt:u.createdAt,stats:u.stats})));}
@@ -147,6 +148,21 @@ async function deleteAdmin(enc){
   if(!confirm('Hapus akun admin ini?'))return;
   try{await api('/api/admin/admins/'+enc,{method:'DELETE'});toast('Admin dihapus ✓');renderAdmins()}catch(e){toast(e.message,false)}
 }
+async function renderSystem(){
+  const d=await api('/api/admin/system');
+  const mb=n=>Math.round(Number(n||0)/1024/1024);
+  const gb=n=>(Number(n||0)/1024/1024/1024).toFixed(2);
+  $('content').innerHTML=`<div class="top"><div><div class="title">System Live ✦</div><div class="sub">Runtime monitor, traffic snapshot, storage, dan performa backend.</div></div><div class="quick-actions"><button class="btn ghost" onclick="renderSystem()">↻ Refresh</button><button class="btn blue" onclick="location.reload()">⟳ Reload Panel</button></div></div>
+  <div class="stats-grid">
+    <div class="stat-card pop"><div class="stat-icon">⚡</div><div class="stat-label">Uptime</div><div class="stat-value">${Math.floor(d.uptime/3600)}h ${Math.floor(d.uptime/60)%60}m</div><div class="stat-foot ok">● Runtime aktif</div></div>
+    <div class="stat-card pop"><div class="stat-icon">◉</div><div class="stat-label">Online</div><div class="stat-value">${d.online}</div><div class="stat-foot">${d.users} total users</div></div>
+    <div class="stat-card pop"><div class="stat-icon">▣</div><div class="stat-label">Messages</div><div class="stat-value">${d.messages}</div><div class="stat-foot">${d.recentMessages} / 24 jam</div></div>
+    <div class="stat-card pop"><div class="stat-icon">◫</div><div class="stat-label">Storage</div><div class="stat-value">${gb(d.uploads.bytes)} GB</div><div class="stat-foot">${d.uploads.files} files</div></div>
+  </div>
+  <div class="grid2" style="margin-top:16px"><div class="card"><div class="card-head"><div><h3>Runtime</h3><div class="sub">Environment backend saat ini.</div></div><span class="pill green"><span class="health-dot"></span>ONLINE</span></div><div class="mini-grid"><div class="mini">Node<b>${esc(d.node)}</b></div><div class="mini">Platform<b>${esc(d.platform)}</b></div><div class="mini">Architecture<b>${esc(d.arch)}</b></div><div class="mini">PID<b>${d.pid}</b></div><div class="mini">RSS<b>${mb(d.memory.rss)} MB</b></div><div class="mini">Heap<b>${mb(d.memory.heapUsed)} / ${mb(d.memory.heapTotal)} MB</b></div></div></div>
+  <div class="card"><div class="card-head"><div><h3>Backend capabilities</h3><div class="sub">Fitur server yang aktif di build ini.</div></div></div><div class="chips"><span class="pill purple">Socket.IO realtime</span><span class="pill blue">Idempotent send</span><span class="pill green">Reactions</span><span class="pill yellow">Pinned</span><span class="pill blue">Polls</span><span class="pill purple">Media + Files</span><span class="pill green">Audit log</span></div></div></div>`;
+}
+
 async function renderSettings(){const [s,h]=await Promise.all([api('/api/admin/settings'),api('/api/admin/health')]);$('content').innerHTML=`<div class="top"><div><div class="title">Settings</div><div class="sub">Kontrol aplikasi dan keamanan admin.</div></div><button class="btn ghost" onclick="renderSettings()">↻ Refresh</button></div><div class="card"><h3>Server controls</h3><div class="switch"><div><b>Maintenance mode</b><div class="muted">Blokir aktivitas registrasi baru.</div></div><input id="smnt" type="checkbox" ${s.maintenance?'checked':''}></div><br><div class="switch"><div><b>Registration</b><div class="muted">Izinkan user baru mendaftar.</div></div><input id="sreg" type="checkbox" ${s.registrationEnabled?'checked':''}></div><br><label class="label">Max upload MB</label><input id="smax" class="input" type="number" value="${s.maxUploadMb}"><br><br><label class="label">Announcement</label><textarea id="sann" class="textarea" rows="4">${esc(s.announcement||'')}</textarea><br><br><button class="btn" onclick="saveSettings()">Simpan Settings</button></div><br><div class="card"><h3>🔐 Admin password</h3><p class="sub">Sekarang password admin bisa diganti langsung dari website. Password disimpan sebagai hash bcrypt di database server.</p><div class="formgrid"><div class="full"><label class="label">Password saat ini</label><input id="acur" class="input" type="password" autocomplete="current-password"></div><div><label class="label">Password baru</label><input id="anew" class="input" type="password" autocomplete="new-password"></div><div><label class="label">Konfirmasi password baru</label><input id="acon" class="input" type="password" autocomplete="new-password"></div></div><div style="margin-top:14px"><button class="btn blue" onclick="changeAdminPassword()">Ubah Password Admin</button></div></div><br><div class="card"><div class="top" style="margin-bottom:10px"><div><h3 style="margin:0">Runtime health</h3><div class="sub">Informasi server saat halaman ini dibuka.</div></div><span class="pill green"><span class="health-dot"></span>OK</span></div><div class="mini-grid"><div class="mini">Node<b>${esc(h.node)}</b></div><div class="mini">Platform<b>${esc(h.platform)} / ${esc(h.arch)}</b></div><div class="mini">PID<b>${h.pid}</b></div><div class="mini">Memory<b>${Math.round(h.memory/1024/1024)} MB</b></div><div class="mini">DB<b>${Math.round(h.dbBytes/1024)} KB</b></div><div class="mini">Uploads<b>${(Number(h.uploadBytes||0)/1024/1024/1024).toFixed(2)} GB</b></div></div></div>`}
 async function saveSettings(){await api('/api/admin/settings',{method:'PATCH',body:JSON.stringify({maintenance:$('smnt').checked,registrationEnabled:$('sreg').checked,maxUploadMb:Number($('smax').value),announcement:$('sann').value})});toast('Settings tersimpan ✓')}
 async function changeAdminPassword(){const currentPassword=$('acur').value,newPassword=$('anew').value,confirmPassword=$('acon').value;if(newPassword.length<8)return toast('Password baru minimal 8 karakter',false);if(newPassword!==confirmPassword)return toast('Konfirmasi password tidak sama',false);await api('/api/admin/password',{method:'POST',body:JSON.stringify({currentPassword,newPassword,confirmPassword})});$('acur').value='';$('anew').value='';$('acon').value='';toast('Password admin berhasil diubah ✓')}

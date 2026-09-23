@@ -67,16 +67,16 @@ class _HomePageState extends State<HomePage> with RouteAware {
         ),
       ),
     );
-    if (!context.mounted) return;
+    if (!mounted) return;
     if (choice == 'contact') {
       final ok = await Navigator.push(context, MaterialPageRoute(builder: (_) => AddContactPage(session: widget.session)));
-      if (!context.mounted) return;
+      if (!mounted) return;
       if (ok == true) {
         refresh();
       }
     } else if (choice == 'group') {
       final g = await Navigator.push(context, MaterialPageRoute(builder: (_) => CreateGroupPage(session: widget.session)));
-      if (!context.mounted) return;
+      if (!mounted) return;
       if (g != null) {
         refresh();
       }
