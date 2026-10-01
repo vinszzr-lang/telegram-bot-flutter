@@ -5,15 +5,15 @@ plugins {
 }
 
 android {
-    namespace = "com.vinzz.chatwithu"
-    compileSdk = flutter.compileSdkVersion
+    namespace = "com.nullx.evo"
+    compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.vinzz.chatwithu"
-        minSdk = 24
-        targetSdk = flutter.targetSdkVersion
-        versionCode = 8
-        versionName = "2.0.0"
+        applicationId = "com.nullx.evo"
+        minSdk = 23
+        targetSdk = 36
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
     }
 
     compileOptions {
@@ -21,19 +21,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
     buildTypes {
-        getByName("release") {
-            // Test/distribution build: use the runner's debug keystore so the APK
-            // is installable in CI. Replace with a real release keystore before
-            // publishing to Google Play or another public store.
+        release {
             signingConfig = signingConfigs.getByName("debug")
         }
-    }
-}
-
-kotlin {
-    compilerOptions {
-        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
 }
 

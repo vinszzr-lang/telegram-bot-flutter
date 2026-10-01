@@ -1,32 +1,19 @@
-name: x_chat
-description: "X Chat - private realtime messaging client"
-publish_to: "none"
-version: 5.0.1+10
+name: excellent_mirroring
+description: Low-latency Android screen mirroring sender for Chromebook.
+publish_to: 'none'
+version: 1.0.0+1
 
 environment:
-  sdk: ">=3.10.0 <4.0.0"
+  sdk: '>=3.0.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
-  cupertino_icons: ^1.0.8
-  shared_preferences: ^2.5.3
-  http: ^1.2.2
-  file_picker: ^13.1.0
-  image_picker: ^1.1.2
-  saver_gallery: ^4.1.2
-  permission_handler: ^12.0.3
-  socket_io_client: ^3.1.6
-  path_provider: ^2.1.5
-  video_player: ^2.9.5
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
+  flutter_lints: ^3.0.0
 
 flutter:
   uses-material-design: true
-  assets:
-    - assets/chat_background.jpg
-    - assets/xchat_background.jpg
