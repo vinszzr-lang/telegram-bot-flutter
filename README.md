@@ -69,3 +69,7 @@ Android menggunakan hardware H.264 dan tidak membuat antrean frame aplikasi. Jik
 Server memakai FFmpeg dengan mode low-delay dan membatasi `WebSocket.bufferedAmount`; viewer yang terlalu lambat diputus daripada membuat delay terus membesar.
 
 > Tidak ada jaringan/video pipeline yang bisa menjamin "nol delay". Implementasi ini secara khusus menghindari unbounded buffering dan reconnect ke sumber secara otomatis.
+
+
+### Encoder sync compatibility
+This build sends H.264 as AVCC with an AVCDecoderConfigurationRecord and uses a 1-second IDR interval. The receiver/server handles recovery by waiting for a fresh keyframe when a viewer falls behind.
