@@ -285,7 +285,7 @@ public class MirrorService extends Service {
 
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
             try {
-                int idx = local.dequeueOutputBuffer(info, 2_000);
+                int idx = local.dequeueOutputBuffer(info, 0);
 
                 if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     MediaFormat f = local.getOutputFormat();
@@ -297,7 +297,10 @@ public class MirrorService extends Service {
                     }
                     return true;
                 }
-                if (idx < 0) return true;
+                if (idx < 0) {
+                    try { Thread.sleep(1); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+                    return true;
+                }
 
                 ByteBuffer b = local.getOutputBuffer(idx);
                 try {
@@ -420,33 +423,76 @@ public class MirrorService extends Service {
     }
 
     private void registerDisplayListener() {
-        displayManager=(DisplayManager)getSystemService(DISPLAY_SERVICE);
-        displayListener=new DisplayManager.DisplayListener(){
-            @Override public void onDisplayAdded(int id){}
-            @Override public void onDisplayRemoved(int id){}
-            @Override public void onDisplayChanged(int id){
-                if(id!=Display.DEFAULT_DISPLAY||!running)return;
-                // Android may emit several display-change callbacks during one
-                // rotation. Rebuilding for every callback races MediaCodec and
-                // can make the stream look disconnected. Debounce them.
+        displayManager = (DisplayManager)getSystemService(DISPLAY_SERVICE);
+        displayListener = new DisplayManager.DisplayListener() {
+            @Override public void onDisplayAdded(int id) {}
+            @Override public void onDisplayRemoved(int id) {}
+
+            @Override public void onDisplayChanged(int id) {
+                if (id != Display.DEFAULT_DISPLAY || !running) return;
                 if (pendingDisplayRebuild != null) {
                     displayHandler.removeCallbacks(pendingDisplayRebuild);
                 }
-                pendingDisplayRebuild = () -> new Thread(() -> {
-                    try {
-                        synchronized(pipelineLock) {
-                            if (!running) return;
-                            int[] n = outputSize();
-                            if(n[0] != currentW || n[1] != currentH) rebuildPipelineLocked();
-                        }
-                    } catch(Throwable t) {
-                        setStatus("Rotate error: "+shortError(t));
-                    }
-                },"MirrorRotate").start();
-                displayHandler.postDelayed(pendingDisplayRebuild, 350);
+                // Wait for Android to finish the orientation transition. One
+                // rebuild only, instead of racing several callbacks.
+                pendingDisplayRebuild = () -> rotatePipeline();
+                displayHandler.postDelayed(pendingDisplayRebuild, 650);
             }
         };
-        displayManager.registerDisplayListener(displayListener,null);
+        displayManager.registerDisplayListener(displayListener, displayHandler);
+    }
+
+    private void rotatePipeline() {
+        if (!running) return;
+        new Thread(() -> {
+            int[] target = outputSize();
+            synchronized (pipelineLock) {
+                if (!running) return;
+                if (target[0] == currentW && target[1] == currentH) return;
+                rebuildingPipeline = true;
+                try {
+                    // Keep the TCP connection alive. Only the media pipeline is
+                    // replaced. The first output from the new codec is a fresh
+                    // config + IDR, allowing the browser to resync cleanly.
+                    stopEncoderLocked();
+                    currentW = target[0];
+                    currentH = target[1];
+                    MediaFormat fmt = MediaFormat.createVideoFormat(
+                        MediaFormat.MIMETYPE_VIDEO_AVC, currentW, currentH);
+                    fmt.setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+                    fmt.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
+                    fmt.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
+                    fmt.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+                    if (Build.VERSION.SDK_INT >= 21) {
+                        try { fmt.setInteger(MediaFormat.KEY_BITRATE_MODE,
+                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR); } catch (Throwable ignored) {}
+                    }
+                    if (Build.VERSION.SDK_INT >= 23) {
+                        try { fmt.setInteger(MediaFormat.KEY_LATENCY, 0); } catch (Throwable ignored) {}
+                        try { fmt.setInteger(MediaFormat.KEY_PRIORITY, 0); } catch (Throwable ignored) {}
+                        try { fmt.setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1); } catch (Throwable ignored) {}
+                    }
+                    MediaCodec next = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+                    next.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                    Surface nextSurface = next.createInputSurface();
+                    next.start();
+                    encoder = next;
+                    inputSurface = nextSurface;
+                    cachedConfig = null;
+                    display = projection.createVirtualDisplay(
+                        "ExcellentMirror", currentW, currentH, metrics().densityDpi,
+                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                        inputSurface, null, null);
+                    setStatus("Rotasi • " + currentW + "x" + currentH + " • resync...");
+                    requestKeyFrame();
+                } catch (Throwable t) {
+                    setStatus("Rotate error: " + shortError(t));
+                } finally {
+                    rebuildingPipeline = false;
+                }
+            }
+        }, "MirrorRotate").start();
     }
 
     private void setStatus(String s) {
