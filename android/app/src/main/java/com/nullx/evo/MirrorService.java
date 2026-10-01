@@ -16,6 +16,7 @@ import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.DisplayMetrics;
+import android.view.Display;
 import android.view.Surface;
 
 import java.io.IOException;
