@@ -21,7 +21,7 @@ class _MirrorAppState extends State<MirrorApp> {
 
   int width = 720;
   int bitrate = 4;
-  int fps = 60;
+  int fps = 30;
 
   @override
   void initState() {

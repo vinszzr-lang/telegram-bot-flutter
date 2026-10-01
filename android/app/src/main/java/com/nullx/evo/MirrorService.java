@@ -184,6 +184,12 @@ public class MirrorService extends Service {
         fmt.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
         fmt.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
         fmt.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+        if (Build.VERSION.SDK_INT >= 21) {
+            try { fmt.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR); } catch (Throwable ignored) {}
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            try { fmt.setInteger(MediaFormat.KEY_LATENCY, 0); } catch (Throwable ignored) {}
+        }
         if (Build.VERSION.SDK_INT >= 23) {
             try { fmt.setInteger(MediaFormat.KEY_PRIORITY, 0); } catch (Throwable ignored) {}
             try { fmt.setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1); } catch (Throwable ignored) {}
@@ -197,8 +203,8 @@ public class MirrorService extends Service {
                 "ExcellentMirror", currentW, currentH, metrics().densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 inputSurface, null, null);
-            requestKeyFrame();
             setStatus("Encoder aktif • " + currentW + "x" + currentH + " • " + fps + " FPS");
+            requestKeyFrame();
         } finally {
             rebuildingPipeline = false;
         }
@@ -228,7 +234,7 @@ public class MirrorService extends Service {
                         s.setTcpNoDelay(true); s.setKeepAlive(true); s.setSendBufferSize(64 * 1024);
                         s.connect(new InetSocketAddress(HOST, PORT), 350);
                         socket = s; out = s.getOutputStream();
-                        if (cachedConfig != null) writePacket(out, (byte)0, cachedConfig);
+                        if (cachedConfig != null) writePacket(out, (byte)0, 0L, cachedConfig);
                         requestKeyFrame();
                         setStatus("ADB reverse CONNECTED • streaming...");
                     } catch (IOException e) {
@@ -265,54 +271,96 @@ public class MirrorService extends Service {
 
     private boolean drainOnce(OutputStream out) {
         MediaCodec local;
-        synchronized (pipelineLock) { local = encoder; }
-        if (local == null) return true;
-        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        try {
-            int idx = local.dequeueOutputBuffer(info, 5_000);
-            if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                MediaFormat f = local.getOutputFormat();
-                byte[] config = makeAvcConfig(f);
-                if (config.length > 0) {
-                    cachedConfig = config;
-                    if (out != null) writePacket(out, (byte)0, config);
-                    setStatus(out != null ? "H.264 config OK • streaming..." : "H.264 encoder OK • menunggu server...");
+        byte[] payload = null;
+        long presentationTimeUs = 0L;
+        byte packetType = 2;
+        boolean produced = false;
+
+        // Rotation replaces the MediaCodec. Keep the whole dequeue/read/release
+        // operation inside the same lock as rebuildPipelineLocked(), so the old
+        // codec can never be released while this thread is using it.
+        synchronized (pipelineLock) {
+            local = encoder;
+            if (local == null) return true;
+
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            try {
+                int idx = local.dequeueOutputBuffer(info, 2_000);
+
+                if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    MediaFormat f = local.getOutputFormat();
+                    byte[] config = makeAvcConfig(f);
+                    if (config.length > 0) {
+                        cachedConfig = config;
+                        if (out != null) writePacket(out, (byte)0, 0L, config);
+                        setStatus(out != null ? "H.264 config OK • streaming..." : "H.264 encoder OK • menunggu server...");
+                    }
+                    return true;
                 }
+                if (idx < 0) return true;
+
+                ByteBuffer b = local.getOutputBuffer(idx);
+                try {
+                    if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) return true;
+                    if (b == null || info.size <= 0) return true;
+
+                    int start = Math.max(0, info.offset);
+                    int end = Math.min(b.capacity(), info.offset + info.size);
+                    if (end <= start) return true;
+                    b.position(start);
+                    b.limit(end);
+
+                    byte[] raw = new byte[b.remaining()];
+                    b.get(raw);
+                    byte[] avcc = toAvcc(raw);
+                    if (avcc.length == 0) return true;
+
+                    boolean key = (info.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+                    packetType = (byte)(key ? 1 : 2);
+                    payload = avcc;
+                    presentationTimeUs = Math.max(0L, info.presentationTimeUs);
+                    produced = true;
+                } finally {
+                    try { local.releaseOutputBuffer(idx, false); } catch (Throwable ignored) {}
+                }
+            } catch (IllegalStateException e) {
+                // If the codec changed between callbacks, simply let the next
+                // loop drain the new encoder. Never tear down the TCP socket for
+                // an expected portrait/landscape transition.
+                if (encoder != local || rebuildingPipeline) return true;
+                setStatus("Encoder recovering...");
+                return true;
+            } catch (Throwable e) {
+                if (encoder != local || rebuildingPipeline) return true;
+                setStatus("Encoder error: " + shortError(e));
                 return true;
             }
-            if (idx < 0) return true;
-            ByteBuffer b = local.getOutputBuffer(idx);
-            try {
-                if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) return true;
-                if (b == null || info.size <= 0) return true;
-                int start = Math.max(0, info.offset);
-                int end = Math.min(b.capacity(), info.offset + info.size);
-                if (end <= start) return true;
-                b.position(start); b.limit(end);
-                byte[] raw = new byte[b.remaining()]; b.get(raw);
-                byte[] avcc = toAvcc(raw);
-                if (avcc.length == 0) return true;
-                boolean key = (info.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
-                if (out != null) {
-                    if (cachedConfig != null && key) writePacket(out, (byte)0, cachedConfig);
-                    writePacket(out, (byte)(key ? 1 : 2), avcc);
-                    framesSent++; bytesSent += avcc.length;
-                    if ((framesSent % 30) == 0) setStatus("Streaming • " + currentW + "x" + currentH + " • frame " + framesSent);
-                }
-                return true;
-            } finally { try { local.releaseOutputBuffer(idx, false); } catch (Throwable ignored) {} }
-        } catch (IOException e) { return false; }
-          catch (IllegalStateException e) {
-              // Rotation swaps the MediaCodec. Do not interpret the expected
-              // old-codec transition as a dead TCP/ADB connection.
-              return rebuildingPipeline || running;
-          }
+        }
+
+        if (!produced || payload == null || out == null) return true;
+        try {
+            if (packetType == 1 && cachedConfig != null) {
+                writePacket(out, (byte)0, 0L, cachedConfig);
+            }
+            writePacket(out, packetType, presentationTimeUs, payload);
+            framesSent++;
+            bytesSent += payload.length;
+            if ((framesSent % 30) == 0) {
+                setStatus("Streaming • " + currentW + "x" + currentH + " • frame " + framesSent);
+            }
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
-    private void writePacket(OutputStream out, byte type, byte[] payload) throws IOException {
-        int n = payload.length + 1;
+    private void writePacket(OutputStream out, byte type, long ptsUs, byte[] payload) throws IOException {
+        int n = payload.length + 9;
         out.write((n >>> 24) & 255); out.write((n >>> 16) & 255); out.write((n >>> 8) & 255); out.write(n & 255);
-        out.write(type); out.write(payload); out.flush();
+        out.write(type);
+        for (int i = 7; i >= 0; i--) out.write((int)(ptsUs >>> (i * 8)) & 255);
+        out.write(payload);
+        out.flush();
     }
 
     private byte[] makeAvcConfig(MediaFormat f) {
