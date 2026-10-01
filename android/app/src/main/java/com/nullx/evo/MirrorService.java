@@ -17,6 +17,8 @@ import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.view.Display;
 import android.view.Surface;
@@ -65,6 +67,9 @@ public class MirrorService extends Service {
     private byte[] cachedConfig;
     private long framesSent;
     private long bytesSent;
+    private volatile boolean rebuildingPipeline;
+    private final Handler displayHandler = new Handler(Looper.getMainLooper());
+    private Runnable pendingDisplayRebuild;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -168,9 +173,13 @@ public class MirrorService extends Service {
     }
 
     private void rebuildPipelineLocked() throws Exception {
-        stopEncoderLocked();
-        int[] size = outputSize(); currentW = size[0]; currentH = size[1];
-        MediaFormat fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, currentW, currentH);
+        rebuildingPipeline = true;
+        try {
+            stopEncoderLocked();
+            // Rotation can report transient display metrics. The listener debounces
+            // the rebuild, so this size is the settled portrait/landscape size.
+            int[] size = outputSize(); currentW = size[0]; currentH = size[1];
+            MediaFormat fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, currentW, currentH);
         fmt.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
         fmt.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
         fmt.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
@@ -182,13 +191,17 @@ public class MirrorService extends Service {
         encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
         encoder.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         inputSurface = encoder.createInputSurface();
-        encoder.start();
-        cachedConfig = null;
-        display = projection.createVirtualDisplay(
-            "ExcellentMirror", currentW, currentH, metrics().densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            inputSurface, null, null);
-        setStatus("Encoder aktif • " + currentW + "x" + currentH + " • " + fps + " FPS");
+            encoder.start();
+            cachedConfig = null;
+            display = projection.createVirtualDisplay(
+                "ExcellentMirror", currentW, currentH, metrics().densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                inputSurface, null, null);
+            requestKeyFrame();
+            setStatus("Encoder aktif • " + currentW + "x" + currentH + " • " + fps + " FPS");
+        } finally {
+            rebuildingPipeline = false;
+        }
     }
 
     private void stopEncoderLocked() {
@@ -289,7 +302,11 @@ public class MirrorService extends Service {
                 return true;
             } finally { try { local.releaseOutputBuffer(idx, false); } catch (Throwable ignored) {} }
         } catch (IOException e) { return false; }
-          catch (IllegalStateException e) { return false; }
+          catch (IllegalStateException e) {
+              // Rotation swaps the MediaCodec. Do not interpret the expected
+              // old-codec transition as a dead TCP/ADB connection.
+              return rebuildingPipeline || running;
+          }
     }
 
     private void writePacket(OutputStream out, byte type, byte[] payload) throws IOException {
@@ -361,7 +378,24 @@ public class MirrorService extends Service {
             @Override public void onDisplayRemoved(int id){}
             @Override public void onDisplayChanged(int id){
                 if(id!=Display.DEFAULT_DISPLAY||!running)return;
-                new Thread(()->{try{synchronized(pipelineLock){int[]n=outputSize();if(n[0]!=currentW||n[1]!=currentH)rebuildPipelineLocked();}}catch(Throwable t){setStatus("Rotate error: "+shortError(t));}},"MirrorRotate").start();
+                // Android may emit several display-change callbacks during one
+                // rotation. Rebuilding for every callback races MediaCodec and
+                // can make the stream look disconnected. Debounce them.
+                if (pendingDisplayRebuild != null) {
+                    displayHandler.removeCallbacks(pendingDisplayRebuild);
+                }
+                pendingDisplayRebuild = () -> new Thread(() -> {
+                    try {
+                        synchronized(pipelineLock) {
+                            if (!running) return;
+                            int[] n = outputSize();
+                            if(n[0] != currentW || n[1] != currentH) rebuildPipelineLocked();
+                        }
+                    } catch(Throwable t) {
+                        setStatus("Rotate error: "+shortError(t));
+                    }
+                },"MirrorRotate").start();
+                displayHandler.postDelayed(pendingDisplayRebuild, 350);
             }
         };
         displayManager.registerDisplayListener(displayListener,null);
@@ -377,6 +411,7 @@ public class MirrorService extends Service {
 
     @Override public void onDestroy(){
         running=false;
+        if (pendingDisplayRebuild != null) displayHandler.removeCallbacks(pendingDisplayRebuild);
         if(streamThread!=null)streamThread.interrupt();
         try{if(displayManager!=null&&displayListener!=null)displayManager.unregisterDisplayListener(displayListener);}catch(Throwable ignored){}
         synchronized(pipelineLock){stopEncoderLocked();}
