@@ -1,0 +1,14 @@
+# Flutter / Android
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+build/
+android/.gradle/
+android/local.properties
+*.iml
+
+# Node
+server/node_modules/
+server/npm-debug.log*

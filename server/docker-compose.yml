@@ -1,0 +1,7 @@
+services:
+  excellent-mirror:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "27183:27183/tcp"
+      - "8080:8080/tcp"

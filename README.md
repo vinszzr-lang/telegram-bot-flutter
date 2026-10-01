@@ -1,62 +1,71 @@
-# Excellent Mirror — JavaScript Receiver
+# Excellent Mirror
 
-Ini adalah receiver JS untuk project Android `Excellent Mirror`.
+Android screen mirroring sender dengan hardware H.264 dan receiver server terpisah.
 
-## Yang dibutuhkan
+## 1. Build Android
 
-- Node.js 18+
-- ADB
-- FFmpeg
-- USB debugging Android aktif dan komputer sudah diizinkan
-- Project Android Excellent Mirror dari ZIP Android sebelumnya
+Project memakai:
+- Android Gradle Plugin 8.11.1
+- Gradle 8.13
+- Java 17
+- `flutter build apk --release --split-per-abi`
 
-## Cara menjalankan
+GitHub Actions akan mengunggah:
+- `app-arm64-v8a-release.apk`
+- `app-armeabi-v7a-release.apk`
+- `app-x86_64-release.apk`
 
-1. Jalankan aplikasi Android Excellent Mirror.
-2. Tekan `START MIRRORING`.
-3. Izinkan `Start recording or casting` / screen capture di Android.
-4. Sambungkan HP ke Chromebook/PC lewat USB.
-5. Di folder ZIP ini:
+Jangan gunakan `--android-skip-build-dependency-validation`; konfigurasi Gradle sudah disesuaikan dengan minimum Flutter pada log build yang diberikan.
+
+## 2. Jalankan server terpisah
+
+Server membutuhkan Node.js 20+ dan FFmpeg.
 
 ```bash
+cd server
+npm install
 npm start
 ```
 
-Server otomatis mencoba:
+Default:
+- Android TCP: `27183`
+- Web viewer: `8080`
+
+Buka `http://IP-SERVER:8080/` di Chromebook/PC.
+
+### Docker
 
 ```bash
-adb forward tcp:27183 tcp:27183
+cd server
+docker build -t excellent-mirror-server .
+docker run --rm -p 27183:27183 -p 8080:8080 excellent-mirror-server
 ```
 
-6. Buka:
+## 3. Hubungkan Android
+
+Di aplikasi:
+- Server: IP/hostname mesin yang menjalankan server
+- TCP port: `27183`
+- pilih resolusi, bitrate, FPS
+- tekan `START MIRRORING`
+- izinkan screen capture Android
+
+Untuk USB + ADB tanpa server LAN, jalankan di komputer:
+
+```bash
+adb reverse tcp:27183 tcp:27183
+```
+
+Lalu isi server di aplikasi dengan:
 
 ```text
-http://127.0.0.1:8787
+127.0.0.1
 ```
 
-## Kalau ADB forward gagal
+## Low-latency behavior
 
-Jalankan manual:
+Android menggunakan hardware H.264 dan tidak membuat antrean frame aplikasi. Jika receiver lambat/putus, koneksi dilepas dan dicoba lagi sehingga frame lama tidak ditumpuk.
 
-```bash
-adb devices
-adb forward tcp:27183 tcp:27183
-npm start
-```
+Server memakai FFmpeg dengan mode low-delay dan membatasi `WebSocket.bufferedAmount`; viewer yang terlalu lambat diputus daripada membuat delay terus membesar.
 
-## Alur sebenarnya
-
-Android:
-MediaProjection -> VirtualDisplay -> hardware H.264 -> TCP localhost:27183
-
-ADB:
-TCP localhost PC:27183 -> TCP localhost HP:27183
-
-JavaScript receiver:
-TCP stream -> FFmpeg -> fragmented MP4 -> browser MediaSource -> video
-
-Jadi halaman web bukan animasi/simulasi: frame layar HP yang dikirim oleh Android benar-benar dipakai sebagai sumber video.
-
-## Catatan
-
-Audio belum dikirim oleh project Android ini. Receiver ini hanya menampilkan video layar.
+> Tidak ada jaringan/video pipeline yang bisa menjamin "nol delay". Implementasi ini secara khusus menghindari unbounded buffering dan reconnect ke sumber secara otomatis.
