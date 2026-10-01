@@ -48,6 +48,7 @@ class _MirrorAppState extends State<MirrorApp> {
         status = s;
         running = s != 'Berhenti' &&
             !s.startsWith('ERROR') &&
+            !s.startsWith('Izin screen capture dibatalkan') &&
             s != 'Siap — sambungkan USB + ADB';
       });
     } catch (_) {

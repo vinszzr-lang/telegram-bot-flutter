@@ -31,7 +31,11 @@ public class MainActivity extends FlutterActivity {
                         result.success("Meminta izin screen capture...");
                         break;
                     case "stopProjection":
-                        stopService(new Intent(this,MirrorService.class)); result.success(null); break;
+                        Intent stop = new Intent(this, MirrorService.class);
+                        stop.setAction(MirrorService.ACTION_STOP);
+                        try { startService(stop); } catch (Throwable ignored) {}
+                        result.success(null);
+                        break;
                     case "status":
                         result.success(getSharedPreferences("mirror_state",MODE_PRIVATE).getString("status","Siap — sambungkan USB + ADB"));
                         break;

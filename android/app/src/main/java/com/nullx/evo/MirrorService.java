@@ -47,6 +47,7 @@ public class MirrorService extends Service {
     private static final String HOST = "127.0.0.1";
     private static final int PORT = 27183;
     private static final String PREFS = "mirror_state";
+    public static final String ACTION_STOP = "com.nullx.evo.STOP";
 
     private final Object pipelineLock = new Object();
     private MediaProjection projection;
@@ -81,7 +82,11 @@ public class MirrorService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (running) return START_STICKY;
+        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            stopMirrorNow();
+            return START_NOT_STICKY;
+        }
+        if (running) return START_NOT_STICKY;
 
         int resultCode = intent != null ? intent.getIntExtra("resultCode", -1) : -1;
         Intent data = getProjectionIntent(intent);
@@ -93,7 +98,7 @@ public class MirrorService extends Service {
         setStatus("Izin screen capture diterima • memulai encoder...");
 
         new Thread(() -> startMirror(resultCode, data), "MirrorStart").start();
-        return START_STICKY;
+        return START_NOT_STICKY;
     }
 
     private void startForegroundNow() {
@@ -179,21 +184,7 @@ public class MirrorService extends Service {
             // Rotation can report transient display metrics. The listener debounces
             // the rebuild, so this size is the settled portrait/landscape size.
             int[] size = outputSize(); currentW = size[0]; currentH = size[1];
-            MediaFormat fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, currentW, currentH);
-        fmt.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-        fmt.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
-        fmt.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
-        fmt.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
-        if (Build.VERSION.SDK_INT >= 21) {
-            try { fmt.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR); } catch (Throwable ignored) {}
-        }
-        if (Build.VERSION.SDK_INT >= 23) {
-            try { fmt.setInteger(MediaFormat.KEY_LATENCY, 0); } catch (Throwable ignored) {}
-        }
-        if (Build.VERSION.SDK_INT >= 23) {
-            try { fmt.setInteger(MediaFormat.KEY_PRIORITY, 0); } catch (Throwable ignored) {}
-            try { fmt.setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1); } catch (Throwable ignored) {}
-        }
+            MediaFormat fmt = makeFormat(currentW, currentH);
         encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
         encoder.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         inputSurface = encoder.createInputSurface();
@@ -436,63 +427,97 @@ public class MirrorService extends Service {
                 // Wait for Android to finish the orientation transition. One
                 // rebuild only, instead of racing several callbacks.
                 pendingDisplayRebuild = () -> rotatePipeline();
-                displayHandler.postDelayed(pendingDisplayRebuild, 650);
+                displayHandler.postDelayed(pendingDisplayRebuild, 300);
             }
         };
         displayManager.registerDisplayListener(displayListener, displayHandler);
     }
 
     private void rotatePipeline() {
-        if (!running) return;
+        if (!running || projection == null) return;
         new Thread(() -> {
             int[] target = outputSize();
             synchronized (pipelineLock) {
-                if (!running) return;
+                if (!running || projection == null) return;
                 if (target[0] == currentW && target[1] == currentH) return;
                 rebuildingPipeline = true;
+                MediaCodec next = null;
+                Surface nextSurface = null;
+                VirtualDisplay nextDisplay = null;
+                MediaCodec old = encoder;
+                VirtualDisplay oldDisplay = display;
+                Surface oldSurface = inputSurface;
                 try {
-                    // Keep the TCP connection alive. Only the media pipeline is
-                    // replaced. The first output from the new codec is a fresh
-                    // config + IDR, allowing the browser to resync cleanly.
-                    stopEncoderLocked();
-                    currentW = target[0];
-                    currentH = target[1];
-                    MediaFormat fmt = MediaFormat.createVideoFormat(
-                        MediaFormat.MIMETYPE_VIDEO_AVC, currentW, currentH);
-                    fmt.setInteger(MediaFormat.KEY_COLOR_FORMAT,
-                        MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-                    fmt.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
-                    fmt.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
-                    fmt.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
-                    if (Build.VERSION.SDK_INT >= 21) {
-                        try { fmt.setInteger(MediaFormat.KEY_BITRATE_MODE,
-                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR); } catch (Throwable ignored) {}
-                    }
-                    if (Build.VERSION.SDK_INT >= 23) {
-                        try { fmt.setInteger(MediaFormat.KEY_LATENCY, 0); } catch (Throwable ignored) {}
-                        try { fmt.setInteger(MediaFormat.KEY_PRIORITY, 0); } catch (Throwable ignored) {}
-                        try { fmt.setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1); } catch (Throwable ignored) {}
-                    }
-                    MediaCodec next = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+                    // Build the new pipeline FIRST. The TCP socket stays alive and
+                    // the old encoder remains untouched until the new one is ready.
+                    MediaFormat fmt = makeFormat(target[0], target[1]);
+                    next = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
                     next.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-                    Surface nextSurface = next.createInputSurface();
+                    nextSurface = next.createInputSurface();
                     next.start();
+                    nextDisplay = projection.createVirtualDisplay(
+                        "ExcellentMirror", target[0], target[1], metrics().densityDpi,
+                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                        nextSurface, null, null);
+                    if (nextDisplay == null) throw new IllegalStateException("VirtualDisplay gagal dibuat");
+
+                    // Swap only after the complete new pipeline is alive.
                     encoder = next;
                     inputSurface = nextSurface;
+                    display = nextDisplay;
+                    currentW = target[0];
+                    currentH = target[1];
                     cachedConfig = null;
-                    display = projection.createVirtualDisplay(
-                        "ExcellentMirror", currentW, currentH, metrics().densityDpi,
-                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                        inputSurface, null, null);
-                    setStatus("Rotasi • " + currentW + "x" + currentH + " • resync...");
+                    setStatus("Rotasi • " + currentW + "x" + currentH + " • reconnect keyframe...");
+
+                    // The old pipeline can now be released safely.
+                    try { if (oldDisplay != null) oldDisplay.release(); } catch (Throwable ignored) {}
+                    try { if (oldSurface != null) oldSurface.release(); } catch (Throwable ignored) {}
+                    try { if (old != null) old.stop(); } catch (Throwable ignored) {}
+                    try { if (old != null) old.release(); } catch (Throwable ignored) {}
+
                     requestKeyFrame();
+                    next = null; nextSurface = null; nextDisplay = null;
                 } catch (Throwable t) {
-                    setStatus("Rotate error: " + shortError(t));
+                    // Keep the old pipeline alive if creating the rotated pipeline fails.
+                    if (nextDisplay != null) try { nextDisplay.release(); } catch (Throwable ignored) {}
+                    if (nextSurface != null) try { nextSurface.release(); } catch (Throwable ignored) {}
+                    if (next != null) { try { next.stop(); } catch (Throwable ignored) {} try { next.release(); } catch (Throwable ignored) {} }
+                    setStatus("Rotasi gagal • stream tetap aktif: " + shortError(t));
                 } finally {
                     rebuildingPipeline = false;
                 }
             }
         }, "MirrorRotate").start();
+    }
+
+    private MediaFormat makeFormat(int w, int h) {
+        MediaFormat fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h);
+        fmt.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+        fmt.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
+        fmt.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
+        // Short GOP gives fast recovery after a rotation while keeping CPU cost modest.
+        fmt.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+        if (Build.VERSION.SDK_INT >= 21) {
+            try { fmt.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR); } catch (Throwable ignored) {}
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            try { fmt.setInteger(MediaFormat.KEY_LATENCY, 0); } catch (Throwable ignored) {}
+            try { fmt.setInteger(MediaFormat.KEY_PRIORITY, 0); } catch (Throwable ignored) {}
+            try { fmt.setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1); } catch (Throwable ignored) {}
+        }
+        return fmt;
+    }
+
+    private void stopMirrorNow() {
+        running = false;
+        if (pendingDisplayRebuild != null) displayHandler.removeCallbacks(pendingDisplayRebuild);
+        synchronized (pipelineLock) { stopEncoderLocked(); }
+        try { if (projection != null) projection.stop(); } catch (Throwable ignored) {}
+        projection = null;
+        setStatus("Berhenti");
+        stopForeground(true);
+        stopSelf();
     }
 
     private void setStatus(String s) {
@@ -510,7 +535,9 @@ public class MirrorService extends Service {
         try{if(displayManager!=null&&displayListener!=null)displayManager.unregisterDisplayListener(displayListener);}catch(Throwable ignored){}
         synchronized(pipelineLock){stopEncoderLocked();}
         try{if(projection!=null)projection.stop();}catch(Throwable ignored){}
-        projection=null; setStatus("Berhenti"); super.onDestroy();
+        projection=null;
+        setStatus("Berhenti");
+        super.onDestroy();
     }
     @Override public IBinder onBind(Intent intent){return null;}
 }
