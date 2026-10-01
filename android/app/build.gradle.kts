@@ -12,6 +12,8 @@ android {
         applicationId = "com.nullx.evo"
         minSdk = 23
         targetSdk = 36
+
+    // Keep native libraries split into ABI-specific APKs.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }

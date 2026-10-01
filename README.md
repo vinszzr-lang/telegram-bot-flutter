@@ -1,32 +1,20 @@
-# Excellent Mirror — Android sender
+# Excellent Mirror Android
 
-Android screen-mirroring sender designed around the same basic low-latency idea
-as scrcpy: MediaProjection -> hardware H.264 -> ADB USB tunnel -> receiver.
-
-## Default lightweight profile
-
-- 720p maximum long edge
-- 30 FPS
-- 2 Mbps H.264
-- hardware encoder when the device provides one
-- no audio
-- no unbounded frame queue
-- loopback TCP only (`127.0.0.1:27183`)
-- receiver uses ADB port forwarding
-- display dimensions are calculated from the current phone orientation
+Low-latency Android screen mirroring sender.
 
 ## Build
 
+The project uses Gradle 8.14.3 and Android Gradle Plugin 8.7.3.
+
+For smaller APK downloads, build with:
+
 ```bash
-flutter pub get
-flutter build apk --release
+flutter build apk --release --split-per-abi
 ```
 
-The receiver is intentionally distributed as a separate ZIP.
+Outputs:
+- `app-arm64-v8a-release.apk` — most modern Android phones
+- `app-armeabi-v7a-release.apk` — older 32-bit ARM phones
+- `app-x86_64-release.apk` — x86_64 devices/emulators
 
-## Important
-
-The Android app cannot promise identical performance on every phone: encoder
-hardware, USB quality, Android version and Chromebook decoding all affect the
-result. The defaults are intentionally conservative to keep CPU/GPU/USB load
-low while retaining a responsive stream.
+Do not use `--android-skip-build-dependency-validation`; the project is configured to satisfy Flutter's Gradle requirement directly.
