@@ -1,5 +1,5 @@
-name: excellent_mirroring
-description: Low-latency Android screen mirroring sender for Chromebook.
+name: grid_rank
+description: Ranked Tic Tac Toe from 4x4 to 8x8 with a challenging bot.
 publish_to: 'none'
 version: 1.0.0+1
 
