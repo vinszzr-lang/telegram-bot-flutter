@@ -400,65 +400,67 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
 
   Future<void> _showName() async {
     final temp = TextEditingController(text: _name.text.trim());
-    final value = await showModalBottomSheet<String>(
+    final value = await showDialog<String>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF151925),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Padding(
-            padding: EdgeInsets.fromLTRB(20, 18, 20, MediaQuery.of(sheetContext).viewInsets.bottom + 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Expanded(
-                      child: Text('GANTI NICKNAME', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.of(sheetContext).pop(),
-                      icon: const Icon(Icons.close_rounded),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: temp,
-                  autofocus: true,
-                  maxLength: 14,
-                  textInputAction: TextInputAction.done,
-                  decoration: const InputDecoration(
-                    labelText: 'Nickname',
-                    hintText: 'Masukkan nickname',
-                    prefixIcon: Icon(Icons.person_rounded),
-                    border: OutlineInputBorder(),
-                  ),
-                  onSubmitted: (v) => Navigator.of(sheetContext).pop(v),
-                ),
-                const SizedBox(height: 6),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: () => Navigator.of(sheetContext).pop(temp.text),
-                    icon: const Icon(Icons.check_rounded),
-                    label: const Text('SIMPAN'),
-                  ),
-                ),
-              ],
-            ),
+      barrierDismissible: true,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF151925),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          title: const Text(
+            'GANTI NICKNAME',
+            style: TextStyle(fontWeight: FontWeight.w900),
           ),
+          content: TextField(
+            controller: temp,
+            autofocus: true,
+            maxLength: 14,
+            textInputAction: TextInputAction.done,
+            decoration: const InputDecoration(
+              labelText: 'Nickname',
+              hintText: 'Masukkan nickname',
+              prefixIcon: Icon(Icons.person_rounded),
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (value) {
+              Navigator.of(dialogContext).pop(value);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('BATAL'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(temp.text);
+              },
+              icon: const Icon(Icons.check_rounded),
+              label: const Text('SIMPAN'),
+            ),
+          ],
         );
       },
     );
+    final cleaned = value?.trim() ?? '';
     temp.dispose();
+
     if (!mounted || value == null) return;
-    final cleaned = value.trim();
-    setState(() => _name.text = cleaned.isEmpty ? 'PLAYER' : cleaned);
+
+    setState(() {
+      _name.text = cleaned.isEmpty ? 'PLAYER' : cleaned;
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Nickname diubah menjadi "${_name.text}"'),
+            duration: const Duration(milliseconds: 1400),
+          ),
+        );
+    }
   }
 
   void _showRankGuide() {
