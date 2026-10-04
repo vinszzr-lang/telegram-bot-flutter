@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 void main() => runApp(const GridRankApp());
 
@@ -737,6 +738,7 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
                       ),
                     ],
                   ),
+          ),
         ],
       ),
     );
