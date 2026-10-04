@@ -30,11 +30,12 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
   ScreenMode screen = ScreenMode.home;
   bool _showStarResult = false;
   bool _starApplied = false;
+  bool _showHelpButton = false;
   Timer? _thinkTimer;
   Timer? _sequenceTimer;
 
   int get target => size - 1;
-  int get rankIndex => stars ~/ 5;
+  int get rankIndex => min(stars ~/ 5, 7);
   int get rankStars => stars % 5;
 
   String get rankName => const [
@@ -43,12 +44,12 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
         'GOLD',
         'PLATINUM',
         'DIAMOND',
+        'HEROIC',
         'MASTER',
         'GRANDMASTER',
-        'MYTHIC',
-        'LEGEND',
-        'IMMORTAL',
-      ][min(rankIndex, 9)];
+      ][rankIndex];
+
+  String get rankAsset => 'rank_badges/rank_$rankIndex.png';
 
   @override
   void initState() {
@@ -399,35 +400,60 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
 
   Future<void> _showName() async {
     final temp = TextEditingController(text: _name.text.trim());
-    final value = await showDialog<String>(
+    final value = await showModalBottomSheet<String>(
       context: context,
-      barrierDismissible: true,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Ganti Nickname'),
-        content: TextField(
-          controller: temp,
-          maxLength: 14,
-          autofocus: true,
-          textInputAction: TextInputAction.done,
-          textCapitalization: TextCapitalization.words,
-          decoration: const InputDecoration(
-            hintText: 'Masukkan nickname',
-            prefixIcon: Icon(Icons.person_rounded),
-          ),
-          onSubmitted: (v) => Navigator.of(dialogContext).pop(v),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('BATAL'),
-          ),
-          FilledButton.icon(
-            onPressed: () => Navigator.of(dialogContext).pop(temp.text),
-            icon: const Icon(Icons.check_rounded),
-            label: const Text('SIMPAN'),
-          ),
-        ],
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF151925),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(20, 18, 20, MediaQuery.of(sheetContext).viewInsets.bottom + 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text('GANTI NICKNAME', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(sheetContext).pop(),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: temp,
+                  autofocus: true,
+                  maxLength: 14,
+                  textInputAction: TextInputAction.done,
+                  decoration: const InputDecoration(
+                    labelText: 'Nickname',
+                    hintText: 'Masukkan nickname',
+                    prefixIcon: Icon(Icons.person_rounded),
+                    border: OutlineInputBorder(),
+                  ),
+                  onSubmitted: (v) => Navigator.of(sheetContext).pop(v),
+                ),
+                const SizedBox(height: 6),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.of(sheetContext).pop(temp.text),
+                    icon: const Icon(Icons.check_rounded),
+                    label: const Text('SIMPAN'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
     temp.dispose();
     if (!mounted || value == null) return;
@@ -436,6 +462,7 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
   }
 
   void _showRankGuide() {
+    setState(() => _showHelpButton = false);
     showDialog<void>(
       context: context,
       builder: (dialogContext) => Dialog(
@@ -496,24 +523,18 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
           elevation: 0,
           actions: screen == ScreenMode.home
               ? [
-                  PopupMenuButton<String>(
-                    icon: const Icon(Icons.more_vert_rounded),
-                    onSelected: (value) {
-                      if (value == 'help') _showRankGuide();
-                    },
-                    itemBuilder: (_) => const [
-                      PopupMenuItem<String>(
-                        value: 'help',
-                        child: Row(
-                          children: [
-                            Icon(Icons.help_outline_rounded),
-                            SizedBox(width: 10),
-                            Text('Cara Main & Rank'),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
+                  if (_showHelpButton)
+                    IconButton(
+                      tooltip: 'Rank & bantuan',
+                      onPressed: _showRankGuide,
+                      icon: const Icon(Icons.help_outline_rounded, size: 28),
+                    )
+                  else
+                    IconButton(
+                      tooltip: 'Menu',
+                      onPressed: () => setState(() => _showHelpButton = true),
+                      icon: const Icon(Icons.more_vert_rounded),
+                    ),
                 ]
               : null,
         ),
@@ -553,7 +574,7 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
         ),
         const SizedBox(height: 12),
         OutlinedButton.icon(
-          onPressed: _showName,
+          onPressed: () { _showName(); },
           style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(52), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18))),
           icon: const Icon(Icons.edit_rounded),
           label: const Text('GANTI NICKNAME', style: TextStyle(fontWeight: FontWeight.w800)),
@@ -580,32 +601,58 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
       );
 
   Widget _rankCard() => Container(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
         decoration: BoxDecoration(
           gradient: const LinearGradient(colors: [Color(0xFF171B2A), Color(0xFF11131D)]),
           borderRadius: BorderRadius.circular(22),
           border: Border.all(color: Colors.white10),
         ),
-        child: Row(
+        child: Column(
           children: [
-            Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(shape: BoxShape.circle, color: const Color(0xFF7C5CFF).withOpacity(.18)),
-              child: const Icon(Icons.workspace_premium_rounded, size: 33),
+            Row(
+              children: [
+                const Icon(Icons.workspace_premium_rounded, color: Colors.amberAccent, size: 22),
+                const SizedBox(width: 8),
+                const Text('RANK SAAT INI', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w900, color: Colors.white70)),
+                const Spacer(),
+                Text('$stars ⭐ diperoleh', style: const TextStyle(color: Colors.amberAccent, fontWeight: FontWeight.w800, fontSize: 12)),
+              ],
             ),
-            const SizedBox(width: 13),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(children: [Text(rankName, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w900)), const Spacer(), Text('$rankStars/5', style: const TextStyle(color: Colors.white60, fontWeight: FontWeight.bold))]),
-                  const SizedBox(height: 9),
-                  ClipRRect(borderRadius: BorderRadius.circular(10), child: LinearProgressIndicator(value: rankStars / 5, minHeight: 8)),
-                  const SizedBox(height: 6),
-                  Text(rankStars == 4 ? '1 bintang lagi ke rank berikutnya' : '${5 - rankStars} bintang ke rank berikutnya', style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                ],
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Image.asset(
+                rankAsset,
+                height: 142,
+                width: double.infinity,
+                fit: BoxFit.contain,
               ),
+            ),
+            const SizedBox(height: 4),
+            Text(rankName, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, letterSpacing: 1.1)),
+            const SizedBox(height: 5),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(5, (i) => Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: Icon(
+                      i < rankStars ? Icons.star_rounded : Icons.star_border_rounded,
+                      color: Colors.amberAccent,
+                      size: 23,
+                    ),
+                  )),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              rankIndex == 7
+                  ? 'RANK TERTINGGI • 35+ BINTANG'
+                  : (rankStars == 4 ? '1 bintang lagi ke rank berikutnya' : '${5 - rankStars} bintang ke rank berikutnya'),
+              style: const TextStyle(color: Colors.white54, fontSize: 12),
+            ),
+            const SizedBox(height: 9),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: LinearProgressIndicator(value: rankIndex == 7 ? 1 : rankStars / 5, minHeight: 8),
             ),
           ],
         ),

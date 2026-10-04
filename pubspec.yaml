@@ -20,3 +20,4 @@ flutter:
 
   assets:
     - rank_system.png
+    - rank_badges/
