@@ -31,6 +31,8 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
   bool _showStarResult = false;
   bool _starApplied = false;
   bool _showHelpButton = false;
+  bool _editingNickname = false;
+  String _nicknameBackup = 'PLAYER';
   Timer? _thinkTimer;
   Timer? _sequenceTimer;
 
@@ -398,69 +400,39 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
     return score;
   }
 
-  Future<void> _showName() async {
-    final temp = TextEditingController(text: _name.text.trim());
-    final value = await showDialog<String>(
-      context: context,
-      barrierDismissible: true,
-      builder: (dialogContext) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF151925),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          title: const Text(
-            'GANTI NICKNAME',
-            style: TextStyle(fontWeight: FontWeight.w900),
-          ),
-          content: TextField(
-            controller: temp,
-            autofocus: true,
-            maxLength: 14,
-            textInputAction: TextInputAction.done,
-            decoration: const InputDecoration(
-              labelText: 'Nickname',
-              hintText: 'Masukkan nickname',
-              prefixIcon: Icon(Icons.person_rounded),
-              border: OutlineInputBorder(),
-            ),
-            onSubmitted: (value) {
-              Navigator.of(dialogContext).pop(value);
-            },
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('BATAL'),
-            ),
-            FilledButton.icon(
-              onPressed: () {
-                Navigator.of(dialogContext).pop(temp.text);
-              },
-              icon: const Icon(Icons.check_rounded),
-              label: const Text('SIMPAN'),
-            ),
-          ],
-        );
-      },
-    );
-    final cleaned = value?.trim() ?? '';
-    temp.dispose();
-
-    if (!mounted || value == null) return;
-
+  void _beginNicknameEdit() {
+    if (screen != ScreenMode.home) return;
+    _nicknameBackup = _name.text.trim().isEmpty ? 'PLAYER' : _name.text.trim();
     setState(() {
-      _name.text = cleaned.isEmpty ? 'PLAYER' : cleaned;
+      _editingNickname = true;
+      _name.text = _nicknameBackup;
+      _name.selection = TextSelection(baseOffset: 0, extentOffset: _name.text.length);
     });
+  }
 
-    if (mounted) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            content: Text('Nickname diubah menjadi "${_name.text}"'),
-            duration: const Duration(milliseconds: 1400),
-          ),
-        );
-    }
+  void _saveNickname() {
+    final cleaned = _name.text.trim();
+    setState(() {
+      _name.text = cleaned.isEmpty ? _nicknameBackup : cleaned;
+      _editingNickname = false;
+    });
+    FocusManager.instance.primaryFocus?.unfocus();
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('Nickname disimpan: ${_name.text}'),
+          duration: const Duration(milliseconds: 1200),
+        ),
+      );
+  }
+
+  void _cancelNicknameEdit() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() {
+      _name.text = _nicknameBackup;
+      _editingNickname = false;
+    });
   }
 
   void _showRankGuide() {
@@ -575,12 +547,63 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
           label: const Text('MULAI - RANKED', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900, letterSpacing: .5)),
         ),
         const SizedBox(height: 12),
-        OutlinedButton.icon(
-          onPressed: () { _showName(); },
-          style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(52), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18))),
-          icon: const Icon(Icons.edit_rounded),
-          label: const Text('GANTI NICKNAME', style: TextStyle(fontWeight: FontWeight.w800)),
-        ),
+        if (!_editingNickname)
+          FilledButton.icon(
+            onPressed: _beginNicknameEdit,
+            style: FilledButton.styleFrom(
+              minimumSize: const Size.fromHeight(52),
+              backgroundColor: const Color(0xFF252A3A),
+              foregroundColor: const Color(0xFFD5C6FF),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+            ),
+            icon: const Icon(Icons.edit_rounded),
+            label: const Text('GANTI NICKNAME', style: TextStyle(fontWeight: FontWeight.w800)),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFF151925),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: const Color(0xFF7C5CFF).withOpacity(.45)),
+            ),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _name,
+                  autofocus: true,
+                  maxLength: 14,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _saveNickname(),
+                  decoration: const InputDecoration(
+                    labelText: 'Nickname',
+                    hintText: 'Masukkan nickname',
+                    prefixIcon: Icon(Icons.person_rounded),
+                    counterText: '',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _cancelNicknameEdit,
+                        child: const Text('BATAL'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: _saveNickname,
+                        icon: const Icon(Icons.check_rounded),
+                        label: const Text('SIMPAN'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         const SizedBox(height: 20),
         const Text('Mode board dipilih secara acak 4×4 sampai 8×8 setiap match.', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 12)),
       ],
