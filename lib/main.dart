@@ -106,6 +106,7 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
   void _play(int index) {
     if (screen != ScreenMode.playing || gameOver || thinking || turn != Cell.x || board[index] != Cell.empty) return;
 
+    SystemSound.play(SystemSoundType.click);
     setState(() {
       board[index] = Cell.x;
       turn = Cell.o;
@@ -154,6 +155,9 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
   void _finish(bool playerWon, List<int> line) {
     if (gameOver) return;
     _thinkTimer?.cancel();
+    final delta = playerWon ? 1 : -1;
+    final nextStars = max(0, stars + delta);
+    SystemSound.play(SystemSoundType.click);
     setState(() {
       gameOver = true;
       thinking = false;
@@ -164,15 +168,17 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
       _starApplied = false;
     });
 
-    // Result animation first, star animation second.
+    // Result animation first. Only after it finishes do we show the star change.
     _sequenceTimer?.cancel();
-    _sequenceTimer = Timer(const Duration(milliseconds: 1150), () {
-      if (!mounted) return;
+    _sequenceTimer = Timer(const Duration(milliseconds: 1350), () {
+      if (!mounted || screen != ScreenMode.result) return;
       setState(() => _showStarResult = true);
-      _sequenceTimer = Timer(const Duration(milliseconds: 850), () {
-        if (!mounted || _starApplied) return;
+
+      // Apply the actual ranked score after the star animation has been visible.
+      _sequenceTimer = Timer(const Duration(milliseconds: 950), () {
+        if (!mounted || screen != ScreenMode.result || _starApplied) return;
         setState(() {
-          stars = result == 'VICTORY' ? stars + 1 : max(0, stars - 1);
+          stars = nextStars;
           _starApplied = true;
         });
       });
@@ -640,21 +646,15 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
 
   Widget _resultOverlay() {
     final victory = result == 'VICTORY';
-    final showStars = _showStarResult;
-    final delta = victory ? '+1 STAR' : '-1 STAR';
-
     return Positioned.fill(
-      child: IgnorePointer(
-        ignoring: !_starApplied,
-        child: Container(
-          color: Colors.black.withOpacity(.68),
-          alignment: Alignment.center,
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 350),
-            child: !showStars
-                ? _resultTitle(victory)
-                : _starAnimation(victory, delta),
-          ),
+      child: Container(
+        color: Colors.black.withOpacity(.74),
+        alignment: Alignment.center,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 320),
+          child: !_showStarResult
+              ? _resultTitle(victory)
+              : _starAnimation(victory),
         ),
       ),
     );
@@ -662,43 +662,98 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
 
   Widget _resultTitle(bool victory) => TweenAnimationBuilder<double>(
         key: ValueKey('result-$result'),
-        tween: Tween(begin: .35, end: 1),
-        duration: const Duration(milliseconds: 850),
+        tween: Tween(begin: .45, end: 1),
+        duration: const Duration(milliseconds: 900),
         curve: Curves.elasticOut,
         builder: (_, scale, child) => Transform.scale(scale: scale, child: child),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(victory ? Icons.emoji_events_rounded : Icons.close_rounded, size: 74, color: victory ? Colors.amberAccent : Colors.redAccent),
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: .6, end: 1.0),
+              duration: const Duration(milliseconds: 650),
+              curve: Curves.easeOutBack,
+              builder: (_, s, child) => Transform.scale(scale: s, child: child),
+              child: Icon(victory ? Icons.emoji_events_rounded : Icons.close_rounded, size: 92, color: victory ? Colors.amberAccent : Colors.redAccent),
+            ),
             const SizedBox(height: 14),
-            Text(victory ? 'VICTORY' : 'DEFEAT', style: TextStyle(fontSize: 40, fontWeight: FontWeight.w900, letterSpacing: 2, color: victory ? Colors.greenAccent : Colors.redAccent)),
+            Text(victory ? 'VICTORY' : 'DEFEAT', style: TextStyle(fontSize: 42, fontWeight: FontWeight.w900, letterSpacing: 2.2, color: victory ? Colors.greenAccent : Colors.redAccent)),
             const SizedBox(height: 8),
-            const Text('MATCH SELESAI', style: TextStyle(color: Colors.white60, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+            Text(victory ? 'KAMU MENANG!' : 'BOT MENANG!', style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
           ],
         ),
       );
 
-  Widget _starAnimation(bool victory, String delta) => TweenAnimationBuilder<double>(
-        key: ValueKey('stars-$result-$_starApplied'),
-        tween: Tween(begin: .2, end: 1),
-        duration: const Duration(milliseconds: 700),
-        curve: Curves.elasticOut,
-        builder: (_, scale, child) => Transform.scale(scale: scale, child: child),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.star_rounded, size: 88, color: Colors.amber),
-            const SizedBox(height: 10),
-            Text(delta, style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w900)),
-            const SizedBox(height: 8),
-            Text(victory ? 'BINTANG BERTAMBAH!' : 'BINTANG BERKURANG', style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, letterSpacing: .8)),
-            const SizedBox(height: 14),
-            Text('TOTAL ⭐ $stars', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900)),
-            const SizedBox(height: 22),
-            FilledButton.icon(onPressed: _nextMatch, icon: const Icon(Icons.shuffle_rounded), label: const Text('NEXT MATCH')),
-            const SizedBox(height: 8),
-            TextButton(onPressed: () => setState(() => screen = ScreenMode.home), child: const Text('KEMBALI KE HOME')),
-          ],
-        ),
-      );
+  Widget _starAnimation(bool victory) {
+    final delta = victory ? 1 : -1;
+    final afterStars = max(0, stars + delta);
+    return TweenAnimationBuilder<double>(
+      key: ValueKey('stars-$result'),
+      tween: Tween(begin: .15, end: 1),
+      duration: const Duration(milliseconds: 850),
+      curve: Curves.elasticOut,
+      builder: (_, scale, child) => Transform.scale(scale: scale, child: child),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0.7, end: 1.12),
+            duration: const Duration(milliseconds: 650),
+            curve: Curves.easeInOut,
+            builder: (_, s, child) => Transform.scale(scale: s, child: child),
+            child: const Icon(Icons.star_rounded, size: 92, color: Colors.amber),
+          ),
+          const SizedBox(height: 8),
+          Text(victory ? '+1 STAR' : '-1 STAR', style: const TextStyle(fontSize: 31, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 7),
+          Text(victory ? 'BINTANG BERTAMBAH!' : (stars > 0 ? 'BINTANG BERKURANG' : 'BINTANG TETAP 0'), style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, letterSpacing: .8)),
+          const SizedBox(height: 14),
+          Text('TOTAL ⭐ $afterStars', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 24),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 250),
+            child: !_starApplied
+                ? const SizedBox(
+                    key: ValueKey('updating-stars'),
+                    width: 28,
+                    height: 28,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  )
+                : Column(
+                    key: const ValueKey('result-actions'),
+                    children: [
+                      FilledButton.icon(
+                        onPressed: _nextMatch,
+                        icon: const Icon(Icons.shuffle_rounded),
+                        label: const Text('MAIN LAGI'),
+                        style: FilledButton.styleFrom(minimumSize: const Size(210, 50)),
+                      ),
+                      const SizedBox(height: 10),
+                      OutlinedButton.icon(
+                        onPressed: _backToLobby,
+                        icon: const Icon(Icons.home_rounded),
+                        label: const Text('KEMBALI KE LOBBY'),
+                        style: OutlinedButton.styleFrom(minimumSize: const Size(210, 48)),
+                      ),
+                    ],
+                  ),
+        ],
+      ),
+    );
+  }
+
+  void _backToLobby() {
+    _thinkTimer?.cancel();
+    _sequenceTimer?.cancel();
+    setState(() {
+      screen = ScreenMode.home;
+      gameOver = false;
+      thinking = false;
+      winning = const [];
+      result = '';
+      _showStarResult = false;
+      _starApplied = false;
+    });
+  }
+
 }
