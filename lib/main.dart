@@ -235,41 +235,56 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
     final empties = [for (int i = 0; i < board.length; i++) if (board[i] == Cell.empty) i];
     if (empties.length == 1) return empties.first;
 
-    // Tactical layer: never miss an immediate win and never ignore a direct block.
-    for (final m in empties) {
-      board[m] = Cell.o;
-      final win = _findWin(board, Cell.o);
-      board[m] = Cell.empty;
-      if (win != null) return m;
-    }
-    for (final m in empties) {
-      board[m] = Cell.x;
-      final win = _findWin(board, Cell.x);
-      board[m] = Cell.empty;
-      if (win != null) return m;
+    // Difficulty scales with rank. Bronze intentionally makes mistakes,
+    // while higher ranks progressively use stronger tactical/search play.
+    final r = min(rankIndex, 9);
+    final roll = _rng.nextDouble();
+
+    // Bronze: mostly positional/random play. It can finish a winning line,
+    // but it does not always see the player's threat.
+    if (r == 0) {
+      final winningMoves = <int>[];
+      for (final m in empties) {
+        board[m] = Cell.o;
+        if (_findWin(board, Cell.o) != null) winningMoves.add(m);
+        board[m] = Cell.empty;
+      }
+      if (winningMoves.isNotEmpty && roll < .82) return winningMoves[_rng.nextInt(winningMoves.length)];
+      final candidates = _candidateMoves(empties);
+      return candidates[_rng.nextInt(candidates.length)];
     }
 
+    // Silver: usually blocks, but occasionally overlooks a threat.
+    final mustWin = <int>[];
+    final mustBlock = <int>[];
+    for (final m in empties) {
+      board[m] = Cell.o;
+      if (_findWin(board, Cell.o) != null) mustWin.add(m);
+      board[m] = Cell.empty;
+      board[m] = Cell.x;
+      if (_findWin(board, Cell.x) != null) mustBlock.add(m);
+      board[m] = Cell.empty;
+    }
+    if (mustWin.isNotEmpty) return mustWin[_rng.nextInt(mustWin.length)];
+    if (r == 1 && mustBlock.isNotEmpty && roll < .78) {
+      return mustBlock[_rng.nextInt(mustBlock.length)];
+    }
+    if (r >= 2 && mustBlock.isNotEmpty) return mustBlock[_rng.nextInt(mustBlock.length)];
+
     final candidates = _candidateMoves(empties);
-    final depth = rankIndex >= 8 ? 3 : rankIndex >= 4 ? 2 : 1;
+    final depth = r >= 8 ? 3 : r >= 4 ? 2 : 1;
     int best = candidates.first;
     int bestScore = -1 << 30;
 
     for (final m in candidates) {
       board[m] = Cell.o;
       var score = _heuristic(Cell.o) - _heuristic(Cell.x);
-      score += _centerAndConnectivity(m) * (rankIndex + 2);
-
-      // Prefer moves that create more than one immediate threat.
-      score += _winningThreatCount(Cell.o) * (90 + rankIndex * 8);
-      score -= _winningThreatCount(Cell.x) * (110 + rankIndex * 10);
-
-      if (depth >= 2) {
-        score += _search(depth - 1, Cell.x, -1000000, 1000000);
-      }
-
+      score += _centerAndConnectivity(m) * (r + 2);
+      score += _winningThreatCount(Cell.o) * (70 + r * 12);
+      score -= _winningThreatCount(Cell.x) * (80 + r * 14);
+      if (depth >= 2) score += _search(depth - 1, Cell.x, -1000000, 1000000);
       board[m] = Cell.empty;
-      score += _rng.nextInt(5 + max(0, 3 - rankIndex));
-
+      score += _rng.nextInt(r <= 2 ? 20 : 5);
       if (score > bestScore) {
         bestScore = score;
         best = m;
@@ -382,31 +397,87 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
     return score;
   }
 
-  void _showName() {
-    final temp = TextEditingController(text: _name.text);
-    showDialog<void>(
+  Future<void> _showName() async {
+    final temp = TextEditingController(text: _name.text.trim());
+    final value = await showDialog<String>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Nickname'),
+      barrierDismissible: true,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Ganti Nickname'),
         content: TextField(
           controller: temp,
           maxLength: 14,
           autofocus: true,
+          textInputAction: TextInputAction.done,
           textCapitalization: TextCapitalization.words,
-          decoration: const InputDecoration(hintText: 'Nama pemain'),
+          decoration: const InputDecoration(
+            hintText: 'Masukkan nickname',
+            prefixIcon: Icon(Icons.person_rounded),
+          ),
+          onSubmitted: (v) => Navigator.of(dialogContext).pop(v),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
-          FilledButton(
-            onPressed: () {
-              setState(() => _name.text = temp.text.trim().isEmpty ? 'PLAYER' : temp.text.trim());
-              Navigator.pop(context);
-            },
-            child: const Text('SAVE'),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('BATAL'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(temp.text),
+            icon: const Icon(Icons.check_rounded),
+            label: const Text('SIMPAN'),
           ),
         ],
       ),
-    ).whenComplete(temp.dispose);
+    );
+    temp.dispose();
+    if (!mounted || value == null) return;
+    final cleaned = value.trim();
+    setState(() => _name.text = cleaned.isEmpty ? 'PLAYER' : cleaned);
+  }
+
+  void _showRankGuide() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: const Color(0xFF090B12),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 10, 8),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text('RANK & KESULITAN BOT', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900)),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: InteractiveViewer(
+                minScale: .75,
+                maxScale: 3.0,
+                child: Image.asset('rank_system.png', fit: BoxFit.contain),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Text(
+                '⭐ $stars bintang diperoleh  •  $rankName',
+                style: const TextStyle(fontWeight: FontWeight.w800, color: Colors.amberAccent),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -423,6 +494,28 @@ class _GridRankAppState extends State<GridRankApp> with TickerProviderStateMixin
           centerTitle: true,
           backgroundColor: Colors.transparent,
           elevation: 0,
+          actions: screen == ScreenMode.home
+              ? [
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_vert_rounded),
+                    onSelected: (value) {
+                      if (value == 'help') _showRankGuide();
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem<String>(
+                        value: 'help',
+                        child: Row(
+                          children: [
+                            Icon(Icons.help_outline_rounded),
+                            SizedBox(width: 10),
+                            Text('Cara Main & Rank'),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ]
+              : null,
         ),
         body: SafeArea(
           child: AnimatedSwitcher(
