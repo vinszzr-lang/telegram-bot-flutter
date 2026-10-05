@@ -1,14 +1,15 @@
-# Excellent Mirror — Low Latency Full Rebuild
+# Excellent Mirror — Remote Pterodactyl build
 
-Architecture: Android MediaProjection → hardware H.264 → USB ADB reverse → Chromebook localhost → WebSocket → WebCodecs.
+USB/ADB transport has been removed. The Flutter/Android build workflow itself is unchanged, including `flutter build apk --release --split-per-abi`.
 
-The transport uses ordered TCP and carries a presentation timestamp with every encoded frame. The browser keeps only a tiny decoder queue and, if it falls behind, discards whole old GOPs at an IDR boundary rather than dropping arbitrary H.264 delta frames. This prevents green/reference corruption while avoiding seconds of latency.
+The APK:
+1. asks for Android screen-capture permission;
+2. fetches `server.json` from the specified GitHub repository;
+3. connects directly to the configured host over WebSocket;
+4. sends the existing H.264 packets to the Node.js server;
+5. if the connection times out/disconnects, refreshes `server.json` and retries.
 
-Rotation keeps the TCP connection alive. The encoder is rebuilt only after a debounced display-size change, then a fresh SPS/PPS and IDR are sent.
+The `server/` folder is a Node.js service intended to run in a Pterodactyl Node.js server. It also includes a browser WebCodecs viewer so the old Chromebook-local viewer is no longer required.
 
-Recommended for low-end Chromebook:
-- 540p / 30 FPS / 2–3 Mbps for the lightest load.
-- 720p / 30 FPS / 3–4 Mbps for a balance.
-- 60 FPS is available but requires more decoder/CPU/GPU headroom.
-
-USB: run the Chromebook server, connect the phone with USB debugging enabled, then open http://localhost:3000.
+The current GitHub configuration is:
+https://raw.githubusercontent.com/vinszzr-lang/Project-Reskin-Gue/main/server.json

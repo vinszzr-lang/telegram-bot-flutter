@@ -26,17 +26,25 @@ import android.view.Surface;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.URI;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import org.json.JSONObject;
 import java.nio.ByteBuffer;
 
 /**
  * Excellent Mirror sender.
  *
- * Transport is intentionally fixed to 127.0.0.1:27183. With a USB-connected
- * Android device, the Chromebook runs `adb reverse tcp:27183 tcp:27183`.
+ * Transport is remote WebSocket. The app fetches the current server URL from
+ * the public GitHub server.json and connects directly to that Pterodactyl-hosted
+ * Node.js service. If the server times out, server.json is refreshed and the
+ * app keeps retrying.
  *
- * Wire format:
+ * Wire format inside each WebSocket binary message:
  *   uint32 BE payload length
  *   uint8  type: 0=config(AVCDecoderConfigurationRecord), 1=key, 2=delta
  *   bytes  payload (H.264 AVCC)
@@ -44,8 +52,12 @@ import java.nio.ByteBuffer;
 public class MirrorService extends Service {
     private static final int NOTIF_ID = 77;
     private static final String CHANNEL_ID = "mirror";
-    private static final String HOST = "127.0.0.1";
-    private static final int PORT = 27183;
+    private static final String CONFIG_URL =
+        "https://raw.githubusercontent.com/vinszzr-lang/Project-Reskin-Gue/main/server.json";
+    private static final int CONNECT_TIMEOUT_MS = 3500;
+    private static final int CONFIG_TIMEOUT_MS = 5000;
+    private static final long CONFIG_RETRY_MS = 5000L;
+    private static final SecureRandom RANDOM = new SecureRandom();
     private static final String PREFS = "mirror_state";
     public static final String ACTION_STOP = "com.nullx.evo.STOP";
 
@@ -106,13 +118,13 @@ public class MirrorService extends Service {
         if (Build.VERSION.SDK_INT >= 26) {
             n = new Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("Excellent Mirror")
-                .setContentText("USB/ADB mirroring aktif")
+                .setContentText("Remote mirroring aktif")
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .setOngoing(true).build();
         } else {
             n = new Notification.Builder(this)
                 .setContentTitle("Excellent Mirror")
-                .setContentText("USB/ADB mirroring aktif")
+                .setContentText("Remote mirroring aktif")
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .setOngoing(true).build();
         }
@@ -150,7 +162,7 @@ public class MirrorService extends Service {
             running = true;
             registerDisplayListener();
             synchronized (pipelineLock) { rebuildPipelineLocked(); }
-            setStatus("Encoder aktif • menunggu ADB reverse...");
+            setStatus("Encoder aktif • mencari server...");
 
             streamThread = new Thread(this::streamLoop, "MirrorStream");
             streamThread.start();
@@ -213,39 +225,262 @@ public class MirrorService extends Service {
     private void streamLoop() {
         Socket socket = null;
         OutputStream out = null;
-        long lastConnectAttempt = 0;
+        InputStreamHolder input = null;
+        Thread reader = null;
+        long lastConfigFetch = 0L;
+        String currentServer = null;
+
         while (running) {
             try {
-                if (socket == null || socket.isClosed() || !socket.isConnected()) {
+                boolean socketDead = socket == null || socket.isClosed() || !socket.isConnected();
+                if (socketDead) {
                     long now = System.currentTimeMillis();
-                    if (now - lastConnectAttempt < 150) { drainOnce(null); continue; }
-                    lastConnectAttempt = now;
-                    try {
-                        Socket s = new Socket();
-                        s.setTcpNoDelay(true); s.setKeepAlive(true); s.setSendBufferSize(64 * 1024);
-                        s.connect(new InetSocketAddress(HOST, PORT), 350);
-                        socket = s; out = s.getOutputStream();
-                        if (cachedConfig != null) writePacket(out, (byte)0, 0L, cachedConfig);
-                        requestKeyFrame();
-                        setStatus("ADB reverse CONNECTED • streaming...");
-                    } catch (IOException e) {
-                        closeSocket(socket); socket = null; out = null;
-                        setStatus("Menunggu ADB reverse / server Chromebook...");
+
+                    // Refresh GitHub whenever the connection is unavailable. This
+                    // lets the owner change only server.json when moving servers.
+                    if (currentServer == null || now - lastConfigFetch >= CONFIG_RETRY_MS) {
+                        String fetched = fetchServerUrl();
+                        lastConfigFetch = now;
+                        if (fetched != null && !fetched.equals(currentServer)) {
+                            currentServer = fetched;
+                            setStatus("Server ditemukan • " + currentServer);
+                        } else if (currentServer == null) {
+                            setStatus("Mencari server dari GitHub...");
+                        }
+                    }
+
+                    if (currentServer == null) {
                         drainOnce(null);
+                        sleepQuietly(250);
+                        continue;
+                    }
+
+                    try {
+                        socket = connectWebSocket(currentServer);
+                        socket.setTcpNoDelay(true);
+                        socket.setKeepAlive(true);
+                        socket.setSendBufferSize(64 * 1024);
+                        out = socket.getOutputStream();
+
+                        final Socket readerSocket = socket;
+                        final InputStreamHolder readerInput =
+                            new InputStreamHolder(socket.getInputStream());
+                        input = readerInput;
+
+                        reader = new Thread(() -> webSocketReadLoop(readerSocket, readerInput),
+                            "MirrorWebSocketReader");
+                        reader.setDaemon(true);
+                        reader.start();
+
+                        if (cachedConfig != null) {
+                            writePacket(out, (byte)0, 0L, cachedConfig);
+                        }
+                        requestKeyFrame();
+                        setStatus("SERVER CONNECTED • streaming...");
+                    } catch (Throwable e) {
+                        closeSocket(socket);
+                        socket = null; out = null; input = null;
+                        setStatus("Server timeout • cek GitHub lagi...");
+                        sleepQuietly(300);
                         continue;
                     }
                 }
+
                 boolean ok = drainOnce(out);
-                if (!ok) {
-                    closeSocket(socket); socket = null; out = null;
-                    setStatus("ADB reverse terputus • reconnect...");
+                if (!ok || socket == null || socket.isClosed()) {
+                    closeSocket(socket);
+                    socket = null; out = null; input = null;
+                    setStatus("Server terputus • mencari server lagi...");
+                    sleepQuietly(150);
                 }
             } catch (Throwable t) {
-                closeSocket(socket); socket = null; out = null;
+                closeSocket(socket);
+                socket = null; out = null; input = null;
                 setStatus("Stream error: " + shortError(t));
+                sleepQuietly(300);
             }
         }
         closeSocket(socket);
+    }
+
+    private String fetchServerUrl() {
+        HttpURLConnection c = null;
+        try {
+            URL url = new URL(CONFIG_URL);
+            c = (HttpURLConnection) url.openConnection();
+            c.setConnectTimeout(CONFIG_TIMEOUT_MS);
+            c.setReadTimeout(CONFIG_TIMEOUT_MS);
+            c.setRequestMethod("GET");
+            c.setRequestProperty("Accept", "application/json");
+            c.setRequestProperty("Cache-Control", "no-cache");
+            int code = c.getResponseCode();
+            if (code < 200 || code >= 300) return null;
+
+            StringBuilder body = new StringBuilder();
+            try (java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) body.append(line);
+            }
+
+            JSONObject json = new JSONObject(body.toString());
+            String server = json.optString("server", "").trim();
+            if (server.isEmpty()) return null;
+
+            URI uri = URI.create(server);
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            int port = uri.getPort();
+
+            if (host == null || scheme == null) return null;
+            if (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https")
+                    && !scheme.equalsIgnoreCase("ws") && !scheme.equalsIgnoreCase("wss")) {
+                return null;
+            }
+            if (port < 0) port = scheme.equalsIgnoreCase("https")
+                || scheme.equalsIgnoreCase("wss") ? 443 : 80;
+
+            // Keep the configured URL exactly as supplied except for a trailing slash.
+            // The WebSocket client will use its host/port and connect to /ws.
+            return server;
+        } catch (Throwable ignored) {
+            return null;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    private Socket connectWebSocket(String serverUrl) throws Exception {
+        URI uri = URI.create(serverUrl);
+        String host = uri.getHost();
+        int port = uri.getPort();
+        if (port < 0) port = uri.getScheme().equalsIgnoreCase("https")
+            || uri.getScheme().equalsIgnoreCase("wss") ? 443 : 80;
+
+        if (uri.getScheme().equalsIgnoreCase("https")
+                || uri.getScheme().equalsIgnoreCase("wss")) {
+            throw new IOException("HTTPS/WSS requires a TLS endpoint; use http:// for this server");
+        }
+
+        Socket socket = new Socket();
+        socket.setTcpNoDelay(true);
+        socket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+
+        String keyBytes = randomWebSocketKey();
+        String path = uri.getRawPath();
+        if (path == null || path.isEmpty()) path = "/";
+        if (!path.endsWith("/")) path += "/";
+        path += "ws?role=sender";
+        if (uri.getRawQuery() != null && !uri.getRawQuery().isEmpty()) {
+            path += "&" + uri.getRawQuery();
+        }
+        String hostHeader = host + (uri.getPort() >= 0 ? ":" + uri.getPort() : "");
+
+        OutputStream out = socket.getOutputStream();
+        String request =
+            "GET " + path + "ws HTTP/1.1\\r\\n"
+          + "Host: " + hostHeader + "\\r\\n"
+          + "Upgrade: websocket\\r\\n"
+          + "Connection: Upgrade\\r\\n"
+          + "Sec-WebSocket-Key: " + keyBytes + "\\r\\n"
+          + "Sec-WebSocket-Version: 13\\r\\n\\r\\n";
+        out.write(request.getBytes(StandardCharsets.US_ASCII));
+        out.flush();
+
+        java.io.InputStream in = socket.getInputStream();
+        String headers = readHttpHeaders(in);
+        if (!headers.startsWith("HTTP/1.1 101") && !headers.startsWith("HTTP/1.0 101")) {
+            throw new IOException("WebSocket handshake failed: " + firstLine(headers));
+        }
+        return socket;
+    }
+
+    private String randomWebSocketKey() {
+        byte[] bytes = new byte[16];
+        RANDOM.nextBytes(bytes);
+        return android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP);
+    }
+
+    private String readHttpHeaders(java.io.InputStream in) throws IOException {
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        int prev3 = -1, prev2 = -1, prev1 = -1, x;
+        long deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS;
+        while ((x = in.read()) != -1) {
+            b.write(x);
+            prev3 = prev2; prev2 = prev1; prev1 = x;
+            if (prev3 == '\r' && prev2 == '\n' && prev1 == '\r') {
+                int y = in.read();
+                if (y == '\n') { b.write(y); break; }
+                b.write(y);
+            }
+            if (System.currentTimeMillis() > deadline) throw new IOException("WebSocket handshake timeout");
+            if (b.size() > 16384) throw new IOException("WebSocket headers too large");
+        }
+        return b.toString(StandardCharsets.US_ASCII.name());
+    }
+
+    private String firstLine(String headers) {
+        int p = headers.indexOf('\n');
+        return p >= 0 ? headers.substring(0, p).trim() : headers.trim();
+    }
+
+    private void webSocketReadLoop(Socket socket, InputStreamHolder holder) {
+        try {
+            java.io.InputStream in = holder.in;
+            while (running && !socket.isClosed()) {
+                int b1 = in.read();
+                if (b1 < 0) throw new IOException("server closed");
+                int b2 = in.read();
+                if (b2 < 0) throw new IOException("server closed");
+
+                int opcode = b1 & 0x0f;
+                boolean masked = (b2 & 0x80) != 0;
+                long len = b2 & 0x7f;
+                if (len == 126) {
+                    len = ((in.read() & 255) << 8) | (in.read() & 255);
+                } else if (len == 127) {
+                    len = 0;
+                    for (int i = 0; i < 8; i++) len = (len << 8) | (in.read() & 255);
+                }
+                if (len > 1024 * 1024) throw new IOException("WebSocket control frame too large");
+
+                byte[] mask = null;
+                if (masked) {
+                    mask = new byte[4];
+                    readFully(in, mask, 0, 4);
+                }
+                byte[] payload = new byte[(int)len];
+                readFully(in, payload, 0, payload.length);
+                if (masked && payload.length > 0) {
+                    for (int i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
+                }
+
+                if (opcode == 0x8) throw new IOException("server closed websocket");
+                if (opcode == 0x9) sendWebSocketFrame(socket.getOutputStream(), (byte)0xA, payload);
+            }
+        } catch (Throwable ignored) {
+            try { socket.close(); } catch (Throwable ignored2) {}
+        }
+    }
+
+    private void readFully(java.io.InputStream in, byte[] data, int off, int len) throws IOException {
+        int p = 0;
+        while (p < len) {
+            int n = in.read(data, off + p, len - p);
+            if (n < 0) throw new IOException("unexpected EOF");
+            p += n;
+        }
+    }
+
+    private static final class InputStreamHolder {
+        final java.io.InputStream in;
+        InputStreamHolder(java.io.InputStream in) { this.in = in; }
+    }
+
+    private void sleepQuietly(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void requestKeyFrame() {
@@ -349,11 +584,40 @@ public class MirrorService extends Service {
     }
 
     private void writePacket(OutputStream out, byte type, long ptsUs, byte[] payload) throws IOException {
-        int n = payload.length + 9;
-        out.write((n >>> 24) & 255); out.write((n >>> 16) & 255); out.write((n >>> 8) & 255); out.write(n & 255);
-        out.write(type);
-        for (int i = 7; i >= 0; i--) out.write((int)(ptsUs >>> (i * 8)) & 255);
-        out.write(payload);
+        int n = payload.length + 13;
+        byte[] packet = new byte[n];
+        packet[0] = (byte)((n >>> 24) & 255);
+        packet[1] = (byte)((n >>> 16) & 255);
+        packet[2] = (byte)((n >>> 8) & 255);
+        packet[3] = (byte)(n & 255);
+        packet[4] = type;
+        for (int i = 7; i >= 0; i--) packet[12 - i] = (byte)(ptsUs >>> (i * 8));
+        System.arraycopy(payload, 0, packet, 13, payload.length);
+        sendWebSocketFrame(out, (byte)0x2, packet);
+    }
+
+    private synchronized void sendWebSocketFrame(OutputStream out, byte opcode, byte[] payload) throws IOException {
+        int len = payload.length;
+        out.write(0x80 | (opcode & 0x0f));
+
+        if (len <= 125) {
+            out.write(0x80 | len);
+        } else if (len <= 65535) {
+            out.write(0x80 | 126);
+            out.write((len >>> 8) & 255);
+            out.write(len & 255);
+        } else {
+            out.write(0x80 | 127);
+            long l = len & 0xffffffffL;
+            for (int i = 7; i >= 0; i--) out.write((int)(l >>> (i * 8)) & 255);
+        }
+
+        byte[] mask = new byte[4];
+        RANDOM.nextBytes(mask);
+        out.write(mask);
+        byte[] masked = new byte[payload.length];
+        for (int i = 0; i < payload.length; i++) masked[i] = (byte)(payload[i] ^ mask[i & 3]);
+        out.write(masked);
         out.flush();
     }
 
