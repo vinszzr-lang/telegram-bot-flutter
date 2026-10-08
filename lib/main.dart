@@ -1208,9 +1208,13 @@ class Avatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final value = (name ?? '?').trim();
     final letter = value.isEmpty ? '?' : value[0].toUpperCase();
-    ImageProvider? image;
+    ImageProvider<Object>? image;
     if (url != null && url!.isNotEmpty) {
-      image = local ? FileImage(File(url!)) : NetworkImage(url!);
+      if (local) {
+        image = FileImage(File(url!));
+      } else {
+        image = NetworkImage(url!);
+      }
     }
     return CircleAvatar(
       radius: size / 2,
