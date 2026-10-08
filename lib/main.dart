@@ -1,235 +1,96 @@
 import 'dart:async';
-
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-void main() => runApp(const MirrorApp());
+const supabaseUrl = 'https://addcybagfkoqietbpshd.supabase.co';
+const supabaseAnonKey = 'sb_publishable_w2YDgscoFdW-JjQcXq_Cvw_iSCLD-9N';
+final sb = Supabase.instance.client;
+const red = Color(0xFFFF3B55);
+const bg = Color(0xFFF8F9FC);
 
-class MirrorApp extends StatefulWidget {
-  const MirrorApp({super.key});
-
-  @override
-  State<MirrorApp> createState() => _MirrorAppState();
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
+  runApp(const ChatApp());
 }
 
-class _MirrorAppState extends State<MirrorApp> {
-  static const ch = MethodChannel('excellent.mirror/control');
+class ChatApp extends StatelessWidget {
+  const ChatApp({super.key});
+  @override Widget build(BuildContext context) => MaterialApp(
+    debugShowCheckedModeBanner: false,
+    title: 'Chat',
+    theme: ThemeData(useMaterial3: true, scaffoldBackgroundColor: bg, colorScheme: ColorScheme.fromSeed(seedColor: red, brightness: Brightness.light), fontFamily: 'sans'),
+    home: const AuthGate(),
+  );
+}
 
-  Timer? timer;
-  String status = 'Siap — tekan START untuk terhubung ke server';
-  bool running = false;
-
-  int width = 720;
-  int bitrate = 4;
-  int fps = 30;
-
-  @override
-  void initState() {
-    super.initState();
-    timer = Timer.periodic(
-      const Duration(milliseconds: 500),
-      (_) => refresh(),
-    );
-    refresh();
-  }
-
-  @override
-  void dispose() {
-    timer?.cancel();
-    super.dispose();
-  }
-
-  Future<void> refresh() async {
-    try {
-      final s = await ch.invokeMethod<String>('status');
-      if (!mounted || s == null) return;
-
-      setState(() {
-        status = s;
-        running = s != 'Berhenti' &&
-            !s.startsWith('ERROR') &&
-            !s.startsWith('Izin screen capture dibatalkan') &&
-            s != 'Siap — tekan START untuk terhubung ke server';
-      });
-    } catch (_) {
-      // Native side may not be ready yet.
-    }
-  }
-
-  Future<void> start() async {
-    try {
-      final s = await ch.invokeMethod<String>(
-        'startProjection',
-        {
-          'width': width,
-          'bitrate': bitrate * 1000000,
-          'fps': fps,
-        },
-      );
-
-      if (!mounted) return;
-
-      setState(() {
-        status = s ?? 'Meminta izin screen capture...';
-        running = false;
-      });
-
-      await refresh();
-    } on PlatformException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        status = e.message ?? e.code;
-        running = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        status = 'ERROR: $e';
-        running = false;
-      });
-    }
-  }
-
-  Future<void> stop() async {
-    try {
-      await ch.invokeMethod('stopProjection');
-    } catch (_) {
-      // Ignore stop errors when the native service is already stopped.
-    }
-
-    if (!mounted) return;
-
-    setState(() {
-      running = false;
-      status = 'Berhenti';
+class AuthGate extends StatefulWidget { const AuthGate({super.key}); @override State<AuthGate> createState()=>_AuthGateState(); }
+class _AuthGateState extends State<AuthGate> {
+  late final StreamSubscription<AuthState> sub;
+  @override void initState(){ super.initState(); sub=sb.auth.onAuthStateChange.listen((_) { if(mounted)setState((){}); }); }
+  @override void dispose(){sub.cancel();super.dispose();}
+  @override Widget build(BuildContext c){
+    final u=sb.auth.currentUser;
+    if(u==null) return const LoginPage();
+    return FutureBuilder<Map<String,dynamic>?>(future:_profile(u.id), builder:(c,s){
+      if(s.connectionState!=ConnectionState.done) return const Splash();
+      final p=s.data;
+      if(p==null || (p['username']??'').toString().trim().isEmpty) return const UsernamePage();
+      return HomePage(profile:p);
     });
   }
-
-  Widget drop(
-    String label,
-    int value,
-    List<int> vals,
-    ValueChanged<int?> on,
-  ) {
-    return DropdownButtonFormField<int>(
-      initialValue: value,
-      decoration: InputDecoration(labelText: label),
-      items: vals
-          .map(
-            (v) => DropdownMenuItem<int>(
-              value: v,
-              child: Text(
-                label == 'Bitrate'
-                    ? '$v Mbps'
-                    : label == 'FPS'
-                        ? '$v FPS'
-                        : '${v}p',
-              ),
-            ),
-          )
-          .toList(),
-      onChanged: running ? null : on,
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark(useMaterial3: true),
-      home: Scaffold(
-        appBar: AppBar(
-          title: const Text('Excellent Mirror'),
-          actions: [
-            Icon(
-              running ? Icons.cast_connected : Icons.usb_rounded,
-            ),
-            const SizedBox(width: 16),
-          ],
-        ),
-        body: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            const Icon(
-              Icons.phone_android_rounded,
-              size: 76,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              status,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Internet • GitHub server.json • Pterodactyl Node.js',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'VIDEO',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    drop(
-                      'Resolusi maksimum',
-                      width,
-                      [540, 720, 900, 1080],
-                      (v) => setState(() => width = v ?? 720),
-                    ),
-                    const SizedBox(height: 12),
-                    drop(
-                      'Bitrate',
-                      bitrate,
-                      [2, 4, 6, 8, 12, 16],
-                      (v) => setState(() => bitrate = v ?? 4),
-                    ),
-                    const SizedBox(height: 12),
-                    drop(
-                      'FPS',
-                      fps,
-                      [30, 45, 60],
-                      (v) => setState(() => fps = v ?? 60),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: running ? null : start,
-              icon: const Icon(Icons.play_arrow_rounded),
-              label: const Text('START MIRRORING'),
-            ),
-            const SizedBox(height: 10),
-            OutlinedButton.icon(
-              onPressed: running ? stop : null,
-              icon: const Icon(Icons.stop_rounded),
-              label: const Text('STOP'),
-            ),
-            const SizedBox(height: 18),
-            const Text(
-              'Urutan: izinkan screen capture → encoder H.264 → '
-              'ambil server dari GitHub → WebSocket langsung ke server. '
-              'Jika server timeout, konfigurasi GitHub dicek lagi otomatis.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white70),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
+Future<Map<String,dynamic>?> _profile(String id) async { try { return await sb.from('profiles').select().eq('id',id).maybeSingle(); } catch(_){ return null; } }
+
+class Splash extends StatelessWidget { const Splash({super.key}); @override Widget build(BuildContext c)=>const Scaffold(body:Center(child:CircularProgressIndicator())); }
+class LoginPage extends StatelessWidget { const LoginPage({super.key});
+  Future<void> login() async { await sb.auth.signInWithOAuth(OAuthProvider.google, redirectTo:'com.nullx.evo://login-callback'); }
+  @override Widget build(BuildContext c)=>Scaffold(body:Center(child:Padding(padding:const EdgeInsets.all(28),child:Column(mainAxisAlignment:MainAxisAlignment.center,children:[
+    Container(width:92,height:92,decoration:BoxDecoration(color:red,borderRadius:BorderRadius.circular(28)),child:const Icon(Icons.chat_bubble_rounded,color:Colors.white,size:50)),
+    const SizedBox(height:25), const Text('Chat',style:TextStyle(fontSize:38,fontWeight:FontWeight.w800)), const SizedBox(height:8),
+    const Text('Ngobrol cepat, simpel, dan realtime.',textAlign:TextAlign.center,style:TextStyle(color:Colors.black54,fontSize:16)), const SizedBox(height:35),
+    SizedBox(width:double.infinity,height:54,child:FilledButton.icon(onPressed:login,icon:const Icon(Icons.g_mobiledata_rounded,size:30),label:const Text('Lanjut dengan Google',style:TextStyle(fontSize:16,fontWeight:FontWeight.w700)))),
+  ])));
+}
+
+class UsernamePage extends StatefulWidget { const UsernamePage({super.key}); @override State<UsernamePage> createState()=>_UsernamePageState(); }
+class _UsernamePageState extends State<UsernamePage>{ final ctl=TextEditingController(); bool busy=false; String? err;
+ Future<void> save() async { final x=ctl.text.trim().toLowerCase().replaceAll(' ',''); if(x.length<3){setState(()=>err='Username minimal 3 karakter');return;} if(!RegExp(r'^[a-z0-9_.]+$').hasMatch(x)){setState(()=>err='Pakai huruf, angka, titik atau underscore');return;} setState(()=>busy=true); try { final exists=await sb.from('profiles').select('id').eq('username',x).maybeSingle(); if(exists!=null){setState(()=>err='Username sudah dipakai');return;} await sb.from('profiles').upsert({'id':sb.auth.currentUser!.id,'username':x,'display_name':sb.auth.currentUser!.userMetadata?['full_name']??x,'avatar_url':sb.auth.currentUser!.userMetadata?['avatar_url']}); if(mounted)setState(()=>busy=false); } catch(e){if(mounted)setState(() { busy=false; err='Gagal menyimpan username'; });} }
+ @override Widget build(BuildContext c)=>Scaffold(body:Center(child:Padding(padding:const EdgeInsets.all(28),child:Column(mainAxisAlignment:MainAxisAlignment.center,children:[const Text('Pilih username',style:TextStyle(fontSize:30,fontWeight:FontWeight.w800)),const SizedBox(height:8),const Text('Orang lain menemukan kamu lewat username ini.',textAlign:TextAlign.center),const SizedBox(height:24),TextField(controller:ctl,autofocus:true,prefixText:'@',decoration:InputDecoration(labelText:'Username',errorText:err,border:OutlineInputBorder(borderRadius:BorderRadius.circular(16)))),const SizedBox(height:18),SizedBox(width:double.infinity,height:52,child:FilledButton(onPressed:busy?null:save,child:busy?const CircularProgressIndicator():const Text('Simpan')))])))); }
+
+class HomePage extends StatefulWidget { final Map<String,dynamic> profile; const HomePage({super.key,required this.profile}); @override State<HomePage> createState()=>_HomePageState(); }
+class _HomePageState extends State<HomePage>{ int tab=0; List<Map<String,dynamic>> chats=[]; bool loading=true; final search=TextEditingController();
+ @override void initState(){super.initState();load();}
+ Future<void> load() async { try { final me=sb.auth.currentUser!.id; final mem=await sb.from('conversation_members').select('conversation_id').eq('user_id',me); final ids=(mem as List).map((e)=>e['conversation_id']).toList(); if(ids.isEmpty){setState(()=>loading=false);return;} final cs=await sb.from('conversations').select().inFilter('id',ids).order('updated_at',ascending:false); final out=<Map<String,dynamic>>[]; for(final c in cs){ final members=await sb.from('conversation_members').select('user_id').eq('conversation_id',c['id']); final otherList=(members as List).map((e)=>e['user_id']).where((x)=>x!=me).toList(); final other=otherList.isEmpty?null:otherList.first; Map<String,dynamic>? p; if(other!=null)p=await sb.from('profiles').select().eq('id',other).maybeSingle(); out.add({...Map<String,dynamic>.from(c),'other_profile':p}); } if(mounted)setState(() { chats=out; loading=false; }); }catch(_){if(mounted)setState(()=>loading=false);} }
+ Future<void> findUser() async { final q=search.text.trim().replaceFirst('@','').toLowerCase(); if(q.isEmpty)return; final p=await sb.from('profiles').select().ilike('username','%$q%').limit(20); if(!mounted)return; showModalBottomSheet(context:context,isScrollControlled:true,backgroundColor:Colors.white,shape:const RoundedRectangleBorder(borderRadius:BorderRadius.vertical(top:Radius.circular(28))),builder:(_)=>SafeArea(child:ListView(padding:const EdgeInsets.all(20),shrinkWrap:true,children:[const Text('Cari pengguna',style:TextStyle(fontSize:22,fontWeight:FontWeight.w800)),const SizedBox(height:12),...(p as List).map((x)=>ListTile(leading:Avatar(url:x['avatar_url'],name:x['display_name']??x['username']),title:Text(x['display_name']??x['username']),subtitle:Text('@${x['username']}'),onTap:(){Navigator.pop(context);Navigator.push(context,MaterialPageRoute(builder:(_)=>ProfilePage(profile:Map<String,dynamic>.from(x))));}))]))); }
+ @override Widget build(BuildContext c)=>Scaffold(appBar:AppBar(backgroundColor:bg,elevation:0,title:const Text('Pesan',style:TextStyle(fontWeight:FontWeight.w800,fontSize:28)),actions:[IconButton(onPressed:()=>showSearch(context:context,delegate:UserSearchDelegate()),icon:const Icon(Icons.search_rounded)),IconButton(onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>SettingsPage(profile:widget.profile))),icon:const Icon(Icons.settings_outlined))]),body:tab==0?RefreshIndicator(onRefresh:load,child:loading?const Center(child:CircularProgressIndicator()):ListView(padding:const EdgeInsets.only(top:8),children:[if(chats.isEmpty) const EmptyChats(),...chats.map((x)=>ChatTile(data:x))])):ProfilePage(profile:widget.profile),bottomNavigationBar:NavigationBar(selectedIndex:tab,onDestinationSelected:(x)=>setState(()=>tab=x),destinations:const[NavigationDestination(icon:Icon(Icons.chat_bubble_outline),selectedIcon:Icon(Icons.chat_bubble),label:'Chat'),NavigationDestination(icon:Icon(Icons.person_outline),selectedIcon:Icon(Icons.person),label:'Profil')]),floatingActionButton:tab==0?FloatingActionButton(backgroundColor:red,foregroundColor:Colors.white,onPressed:()=>showDialog(context:context,builder:(_)=>AlertDialog(title:const Text('Cari username'),content:TextField(controller:search,autofocus:true,decoration:const InputDecoration(prefixText:'@')),actions:[TextButton(onPressed:()=>Navigator.pop(context),child:const Text('Batal')),FilledButton(onPressed:(){Navigator.pop(context);findUser();},child:const Text('Cari'))])),child:const Icon(Icons.edit_rounded)):null);
+}
+class UserSearchDelegate extends SearchDelegate<String>{ @override List<Widget>? buildActions(c)=>[IconButton(onPressed:()=>query='',icon:const Icon(Icons.clear))]; @override Widget? buildLeading(c)=>IconButton(onPressed:()=>close(c,''),icon:const Icon(Icons.arrow_back)); @override Widget buildResults(c)=>_results(); @override Widget buildSuggestions(c)=>_results(); Widget _results()=>FutureBuilder(future:sb.from('profiles').select().ilike('username','%${query.replaceFirst('@','')}%').limit(20),builder:(c,s){if(!s.hasData)return const Center(child:CircularProgressIndicator());final a=s.data as List;return ListView(children:a.map((x)=>ListTile(leading:Avatar(url:x['avatar_url'],name:x['display_name']??x['username']),title:Text(x['display_name']??x['username']),subtitle:Text('@${x['username']}'),onTap:()=>close(c,x['id'].toString()))).toList());});}
+class ChatTile extends StatelessWidget{final Map<String,dynamic>data;const ChatTile({super.key,required this.data});@override Widget build(BuildContext c){final p=data['other_profile'] as Map<String,dynamic>?;return ListTile(contentPadding:const EdgeInsets.symmetric(horizontal:18,vertical:7),leading:Avatar(url:p?['avatar_url'],name:p?['display_name']??p?['username']),title:Text(p?['display_name']??p?['username']??'Chat',style:const TextStyle(fontWeight:FontWeight.w700)),subtitle:Text(data['last_message']??'Mulai percakapan',maxLines:1,overflow:TextOverflow.ellipsis),onTap:()=>Navigator.push(c,MaterialPageRoute(builder:(_)=>ChatPage(conversation:Map<String,dynamic>.from(data)))));}}
+class EmptyChats extends StatelessWidget{const EmptyChats({super.key});@override Widget build(c)=>Padding(padding:const EdgeInsets.only(top:130,left:30,right:30),child:Column(children:[Icon(Icons.forum_outlined,size:70,color:Colors.black26),const SizedBox(height:16),const Text('Belum ada chat',style:TextStyle(fontSize:22,fontWeight:FontWeight.w800)),const SizedBox(height:6),const Text('Cari username seseorang lalu mulai ngobrol.',textAlign:TextAlign.center,style:TextStyle(color:Colors.black54))]));}
+
+class ProfilePage extends StatelessWidget{final Map<String,dynamic>profile;const ProfilePage({super.key,required this.profile});@override Widget build(c)=>Scaffold(appBar:AppBar(title:const Text('Profil'),actions:[if(profile['id']==sb.auth.currentUser?.id)IconButton(onPressed:()=>Navigator.push(c,MaterialPageRoute(builder:(_)=>EditProfilePage(profile:profile))),icon:const Icon(Icons.edit_outlined))]),body:ListView(padding:const EdgeInsets.all(24),children:[Center(child:Avatar(url:profile['avatar_url'],name:profile['display_name']??profile['username'],size:100)),const SizedBox(height:16),Center(child:Text(profile['display_name']??profile['username']??'',style:const TextStyle(fontSize:25,fontWeight:FontWeight.w800))),Center(child:Text('@${profile['username']??''}',style:const TextStyle(color:Colors.black54))),if((profile['bio']??'').toString().isNotEmpty)...[const SizedBox(height:16),Center(child:Text(profile['bio'],textAlign:TextAlign.center))],if(profile['id']!=sb.auth.currentUser?.id)...[const SizedBox(height:24),FilledButton.icon(onPressed:()=>_openChat(c,profile),icon:const Icon(Icons.chat_bubble_outline),label:const Text('Kirim pesan'))]]) ;}
+Future<void> _openChat(BuildContext c,Map<String,dynamic>p) async { final me=sb.auth.currentUser!.id; final other=p['id']; try{final mine=await sb.from('conversation_members').select('conversation_id').eq('user_id',me);final ids=(mine as List).map((e)=>e['conversation_id']).toList(); Map<String,dynamic>? found; if(ids.isNotEmpty){final cs=await sb.from('conversations').select().inFilter('id',ids); for(final x in cs){final m=await sb.from('conversation_members').select('user_id').eq('conversation_id',x['id']);if((m as List).any((e)=>e['user_id']==other)){found=Map<String,dynamic>.from(x);break;}}} if(found==null){found=Map<String,dynamic>.from(await sb.from('conversations').insert({'type':'direct'}).select().single());await sb.from('conversation_members').insert([{'conversation_id':found['id'],'user_id':me},{'conversation_id':found['id'],'user_id':other}]);} if(c.mounted)Navigator.push(c,MaterialPageRoute(builder:(_)=>ChatPage(conversation:{...found!,'other_profile':p})));}catch(e){if(c.mounted)ScaffoldMessenger.of(c).showSnackBar(const SnackBar(content:Text('Gagal membuat chat')));}}
+
+class ChatPage extends StatefulWidget{final Map<String,dynamic>conversation;const ChatPage({super.key,required this.conversation});@override State<ChatPage>createState()=>_ChatPageState();}
+class _ChatPageState extends State<ChatPage>{final ctl=TextEditingController();final scroll=ScrollController();List<Map<String,dynamic>> msgs=[];Map<String,dynamic>? reply;bool typing=false;Timer? typeTimer;late RealtimeChannel channel;@override void initState(){super.initState();load();channel=sb.channel('chat:${widget.conversation['id']}')..onPostgresChanges(event:PostgresChangeEvent.insert,schema:'public',table:'messages',filter:PostgresChangeFilter(type:PostgresChangeFilterType.eq,column:'conversation_id',value:widget.conversation['id'].toString()),callback:(p){load();})..subscribe();}
+@override void dispose(){typeTimer?.cancel();sb.removeChannel(channel);ctl.dispose();scroll.dispose();super.dispose();}
+Future<void>load()async{try{final r=await sb.from('messages').select().eq('conversation_id',widget.conversation['id']).order('created_at');if(mounted)setState(()=>msgs=(r as List).map((e)=>Map<String,dynamic>.from(e)).toList());WidgetsBinding.instance.addPostFrameCallback((_) {if(scroll.hasClients)scroll.jumpTo(scroll.position.maxScrollExtent);});}catch(_){} }
+Future<void>send({String? text})async{final v=(text??ctl.text).trim();if(v.isEmpty)return;final me=sb.auth.currentUser!.id;try{await sb.from('messages').insert({'conversation_id':widget.conversation['id'],'sender_id':me,'content':v,'type':'text','reply_to_id':reply?['id']});ctl.clear();setState(()=>reply=null);await load();}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Pesan gagal dikirim')));}}
+Future<void>deleteMsg(Map<String,dynamic>m,bool all)async{try{if(all){await sb.from('messages').update({'is_deleted':true,'content':'Pesan dihapus'}).eq('id',m['id']);}else{await sb.from('message_deletions').insert({'message_id':m['id'],'user_id':sb.auth.currentUser!.id});}await load();}catch(_){}}
+void composerTyping(String s){typeTimer?.cancel();typeTimer=Timer(const Duration(milliseconds:700),(){ });}
+@override Widget build(c){final p=widget.conversation['other_profile'] as Map<String,dynamic>?;return Scaffold(appBar:AppBar(title:Row(children:[Avatar(url:p?['avatar_url'],name:p?['display_name']??p?['username'],size:38),const SizedBox(width:10),Column(crossAxisAlignment:CrossAxisAlignment.start,children:[Text(p?['display_name']??p?['username']??'Chat',style:const TextStyle(fontSize:16,fontWeight:FontWeight.w800)),const Text('online',style:TextStyle(fontSize:12,color:Colors.green))])])),body:Column(children:[Expanded(child:ListView.builder(controller:scroll,padding:const EdgeInsets.all(14),itemCount:msgs.length,itemBuilder:(c,i)=>MessageBubble(msg:msgs[i],onReply:()=>setState(()=>reply=msgs[i]),onDelete:(all)=>deleteMsg(msgs[i],all),onJump:(id){final j=msgs.indexWhere((x)=>x['id']==id);if(j>=0)scroll.animateTo(j*70.0,duration:const Duration(milliseconds:180),curve:Curves.easeOut);})),),if(reply!=null)Container(color:Colors.white,padding:const EdgeInsets.symmetric(horizontal:14,vertical:9),child:Row(children:[Container(width:3,height:38,color:red),const SizedBox(width:8),Expanded(child:Text('Membalas: ${reply!['content']??''}',maxLines:2,overflow:TextOverflow.ellipsis)),IconButton(onPressed:()=>setState(()=>reply=null),icon:const Icon(Icons.close))])),SafeArea(child:Container(color:Colors.white,padding:const EdgeInsets.fromLTRB(10,7,10,7),child:Row(children:[IconButton(onPressed:()=>pickImage(),icon:const Icon(Icons.photo_outlined)),Expanded(child:TextField(controller:ctl,onChanged:composerTyping,maxLines:5,minLines:1,decoration:InputDecoration(hintText:'Tulis pesan...',filled:true,fillColor:bg,border:OutlineInputBorder(borderRadius:BorderRadius.circular(24),borderSide:BorderSide.none),contentPadding:const EdgeInsets.symmetric(horizontal:18,vertical:11)))),const SizedBox(width:5),CircleAvatar(backgroundColor:red,child:IconButton(onPressed:()=>send(),color:Colors.white,icon:const Icon(Icons.send_rounded))) ]))) ]));}
+Future<void>pickImage()async{final x=await ImagePicker().pickImage(source:ImageSource.gallery,imageQuality:85);if(x==null)return;try{final path='${sb.auth.currentUser!.id}/${DateTime.now().millisecondsSinceEpoch}_${x.name}';await sb.storage.from('media').upload(path,File(x.path));final url=sb.storage.from('media').getPublicUrl(path);await sb.from('messages').insert({'conversation_id':widget.conversation['id'],'sender_id':sb.auth.currentUser!.id,'content':url,'type':'image','attachment_url':url});await load();}catch(_){if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Upload gambar gagal')));}}
+}
+class MessageBubble extends StatelessWidget{final Map<String,dynamic>msg;final VoidCallback onReply;final ValueChanged<bool>onDelete;final ValueChanged<dynamic>onJump;const MessageBubble({super.key,required this.msg,required this.onReply,required this.onDelete,required this.onJump});@override Widget build(c){final own=msg['sender_id']==sb.auth.currentUser?.id;final deleted=msg['is_deleted']==true;final content=(msg['content']??'').toString();return GestureDetector(onHorizontalDragEnd:(d){if((d.primaryVelocity??0)>500){HapticFeedback.mediumImpact();onReply();}},onLongPress:()=>showModalBottomSheet(context:c,showDragHandle:true,builder:(_)=>SafeArea(child:Wrap(children:[ListTile(leading:const Icon(Icons.reply),title:const Text('Balas'),onTap:(){Navigator.pop(c);onReply();}),if(own)ListTile(leading:const Icon(Icons.delete_outline,color:red),title:const Text('Hapus untuk semua'),onTap:(){Navigator.pop(c);onDelete(true);}),ListTile(leading:const Icon(Icons.delete_sweep_outlined),title:const Text('Hapus untuk saya'),onTap:(){Navigator.pop(c);onDelete(false);})]))),child:Align(alignment:own?Alignment.centerRight:Alignment.centerLeft,child:Container(margin:EdgeInsets.only(top:5,bottom:5,left:own?55:0,right:own?0:55),padding:const EdgeInsets.symmetric(horizontal:14,vertical:10),decoration:BoxDecoration(color:own?red:Colors.white,borderRadius:BorderRadius.only(topLeft:const Radius.circular(18),topRight:const Radius.circular(18),bottomLeft:Radius.circular(own?18:4),bottomRight:Radius.circular(own?4:18)),boxShadow:[BoxShadow(color:Colors.black.withOpacity(.04),blurRadius:5,offset:const Offset(0,2))]),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[if(msg['reply_to_id']!=null)GestureDetector(onTap:()=>onJump(msg['reply_to_id']),child:Container(width:double.infinity,padding:const EdgeInsets.only(left:8),margin:const EdgeInsets.only(bottom:6),decoration:BoxDecoration(border:Border(left:BorderSide(color:own?Colors.greenAccent:red,width:3))),child:Text('Balasan: ${content}',maxLines:1,overflow:TextOverflow.ellipsis,style:TextStyle(color:own?Colors.white70:Colors.black54,fontSize:12)))),if(msg['type']=='image')ClipRRect(borderRadius:BorderRadius.circular(12),child:Image.network(content,width:220,height:220,fit:BoxFit.cover,errorBuilder:(_,__,___)=>const Icon(Icons.broken_image)) )else Text(deleted?'Pesan dihapus':content,style:TextStyle(color:own?Colors.white:Colors.black87,fontStyle:deleted?FontStyle.italic:FontStyle.normal,fontSize:16)),const SizedBox(height:3),Text(DateFormat('HH:mm').format(DateTime.tryParse(msg['created_at']??'')?.toLocal()??DateTime.now()),style:TextStyle(color:own?Colors.white70:Colors.black38,fontSize:10))]))));}}
+
+class EditProfilePage extends StatefulWidget{final Map<String,dynamic>profile;const EditProfilePage({super.key,required this.profile});@override State<EditProfilePage>createState()=>_EditProfilePageState();}
+class _EditProfilePageState extends State<EditProfilePage>{late TextEditingController name,user,bio;XFile? photo;bool busy=false;@override void initState(){super.initState();name=TextEditingController(text:widget.profile['display_name']??'');user=TextEditingController(text:widget.profile['username']??'');bio=TextEditingController(text:widget.profile['bio']??'');}@override void dispose(){name.dispose();user.dispose();bio.dispose();super.dispose();}Future<void>pick()async{photo=await ImagePicker().pickImage(source:ImageSource.gallery,imageQuality:85);setState((){});}Future<void>save()async{setState(()=>busy=true);try{String? url=widget.profile['avatar_url'];if(photo!=null){final path='${sb.auth.currentUser!.id}/avatar_${DateTime.now().millisecondsSinceEpoch}.jpg';await sb.storage.from('media').upload(path,File(photo!.path),fileOptions:const FileOptions(upsert:true));url=sb.storage.from('media').getPublicUrl(path);}await sb.from('profiles').update({'display_name':name.text.trim(),'username':user.text.trim().toLowerCase(),'bio':bio.text.trim(),'avatar_url':url}).eq('id',sb.auth.currentUser!.id);if(mounted)Navigator.pop(c);}catch(e){if(mounted){setState(()=>busy=false);ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Gagal menyimpan profil')));}}}@override Widget build(c)=>Scaffold(appBar:AppBar(title:const Text('Edit profil')),body:ListView(padding:const EdgeInsets.all(22),children:[Center(child:GestureDetector(onTap:pick,child:Avatar(url:photo?.path??widget.profile['avatar_url'],name:name.text,size:95,local:photo!=null))),const SizedBox(height:22),TextField(controller:name,decoration:const InputDecoration(labelText:'Nama',border:OutlineInputBorder())),const SizedBox(height:12),TextField(controller:user,decoration:const InputDecoration(labelText:'Username',prefixText:'@',border:OutlineInputBorder())),const SizedBox(height:12),TextField(controller:bio,maxLines:4,decoration:const InputDecoration(labelText:'Bio',border:OutlineInputBorder())),const SizedBox(height:20),FilledButton(onPressed:busy?null:save,child:busy?const CircularProgressIndicator():const Text('Simpan perubahan'))]));}
+
+class SettingsPage extends StatelessWidget{final Map<String,dynamic>profile;const SettingsPage({super.key,required this.profile});@override Widget build(c)=>Scaffold(appBar:AppBar(title:const Text('Pengaturan')),body:ListView(children:[ListTile(leading:const Icon(Icons.person_outline),title:const Text('Profil'),subtitle:Text('@${profile['username']??''}'),onTap:()=>Navigator.push(c,MaterialPageRoute(builder:(_)=>EditProfilePage(profile:profile)))),const Divider(),ListTile(leading:const Icon(Icons.logout,color:red),title:const Text('Keluar',style:TextStyle(color:red)),onTap:()async{await sb.auth.signOut();if(c.mounted)Navigator.popUntil(c,(r)=>r.isFirst);})]));}
+
+class Avatar extends StatelessWidget{final String?url;final String?name;final double size;final bool local;const Avatar({super.key,this.url,this.name,this.size=52,this.local=false});@override Widget build(c){final letter=(name??'?').trim().isEmpty?'?':(name??'?').trim()[0].toUpperCase();return CircleAvatar(radius:size/2,backgroundColor:const Color(0xFFFFE5E9),backgroundImage:url!=null&&url!.isNotEmpty?(local?FileImage(File(url!)) as ImageProvider:NetworkImage(url!)):null,child:url==null||url!.isEmpty?Text(letter,style:TextStyle(color:red,fontWeight:FontWeight.w800,fontSize:size*.34)):null);}}

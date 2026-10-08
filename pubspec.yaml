@@ -1,7 +1,7 @@
-name: excellent_mirroring
-description: Low-latency Android screen mirroring sender for Chromebook.
-publish_to: 'none'
+name: chat_app
 version: 1.0.0+1
+description: Bright realtime Supabase chat app.
+publish_to: 'none'
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -9,11 +9,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  supabase_flutter: ^2.10.0
+  image_picker: ^1.2.0
+  intl: ^0.20.2
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^3.0.0
+  flutter_lints: ^5.0.0
 
 flutter:
   uses-material-design: true
