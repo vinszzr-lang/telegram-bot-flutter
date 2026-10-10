@@ -52,3 +52,25 @@ ZIP harus berisi setidaknya `pubspec.yaml` dan `lib/main.dart` di dalam satu dir
 - Batas ZIP upload aplikasi: 24 MB karena menggunakan GitHub Contents API.
 - Build berlangsung di runner GitHub, bukan di HP. APK release yang dihasilkan menggunakan signing debug untuk pengujian; untuk distribusi publik, atur signing release sendiri.
 - Build diagnostik dapat mencakup log dan informasi proyek. Periksa isinya sebelum dibagikan.
+
+
+## Mengatur token setelah APK dibuild (MT Manager)
+
+1. Build APK Cloud Builder dengan `assets/github_config.json` berisi `github_token` kosong. Jangan commit token asli ke GitHub.
+2. Setelah APK jadi, buat salinan APK dan buka/edit melalui MT Manager.
+3. Masuk ke `assets/flutter_assets/assets/github_config.json` di dalam APK.
+4. Isi nilai `github_token`, simpan JSON valid, lalu sign ulang APK.
+5. Instal APK hasil sign ulang. Jika Android menolak update karena sertifikat berbeda, uninstall versi lama terlebih dahulu (data lokal aplikasi dapat hilang).
+6. Jalankan aplikasi. Token dibaca saat aplikasi mulai; tutup paksa lalu buka kembali jika aplikasi masih berjalan saat APK diganti.
+
+Contoh konfigurasi aman untuk commit (tanpa token):
+```json
+{
+  "github_owner": "vinszzr-lang",
+  "github_repo": "telegram-bot-flutter",
+  "github_branch": "main",
+  "github_token": ""
+}
+```
+
+**Keamanan:** token yang ditanam di APK bukan rahasia yang aman—siapa pun yang memperoleh APK dapat mengekstraknya. Gunakan fine-grained token dengan akses hanya ke repository yang diperlukan dan masa berlaku singkat. Jangan pernah commit token asli.

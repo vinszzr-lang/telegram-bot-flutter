@@ -1,6 +1,6 @@
 {
-  "github_owner": "GITHUB_USERNAME_OR_ORGANIZATION",
-  "github_repo": "REPOSITORY_NAME",
+  "github_owner": "vinszzr-lang",
+  "github_repo": "telegram-bot-flutter",
   "github_branch": "main",
-  "github_token": "PASTE_GITHUB_TOKEN_HERE"
+  "github_token": ""
 }

@@ -98,7 +98,9 @@ class _BuilderHomeState extends State<BuilderHome> {
       repo.text = bundledRepo.isNotEmpty && bundledRepo != 'REPOSITORY_NAME' ? bundledRepo : (p.getString('repo') ?? '');
       branch.text = bundledBranch.isNotEmpty ? bundledBranch : (p.getString('branch') ?? 'main');
       // JSON config takes priority so the APK uses the bundled GitHub configuration.
-      token.text = bundledToken.isNotEmpty ? bundledToken : (p.getString('token') ?? '');
+      // Token sengaja hanya dibaca dari asset JSON. Jangan fallback ke SharedPreferences,
+      // agar konfigurasi kosong tetap kosong dan token tidak tersimpan tanpa sengaja.
+      token.text = bundledToken;
     });
   }
 
@@ -107,7 +109,7 @@ class _BuilderHomeState extends State<BuilderHome> {
     await p.setString('owner', owner.text.trim());
     await p.setString('repo', repo.text.trim());
     await p.setString('branch', branch.text.trim().isEmpty ? 'main' : branch.text.trim());
-    await p.setString('token', token.text.trim());
+    // Jangan simpan token ke SharedPreferences. Token hanya berasal dari JSON aset APK.
   }
 
   Map<String, String> get headers => {
@@ -432,8 +434,8 @@ class _BuilderHomeState extends State<BuilderHome> {
           const SizedBox(height: 10), _field(repo, 'Nama repository', 'diambil dari assets/github_config.json'),
           const SizedBox(height: 10), _field(branch, 'Branch', 'main'),
           const SizedBox(height: 10),
-          Card(child: ListTile(leading: const Icon(Icons.key), title: const Text('GitHub token dari JSON'), subtitle: Text(token.text.trim().isEmpty ? 'Belum diatur. Isi assets/github_config.json lalu build ulang APK.' : 'Token ditemukan di konfigurasi APK.'), trailing: Icon(token.text.trim().isEmpty ? Icons.warning_amber_rounded : Icons.check_circle, color: token.text.trim().isEmpty ? Colors.orange : Colors.green))),
-          const SizedBox(height: 8), const Text('Owner, repository, branch, dan token dibaca dari assets/github_config.json. Token yang ditanam di APK tetap bisa diekstrak; batasi izin dan masa berlakunya.', style: TextStyle(fontSize: 12, color: Colors.black54)),
+          Card(child: ListTile(leading: const Icon(Icons.key), title: const Text('GitHub token dari JSON'), subtitle: Text(token.text.trim().isEmpty ? 'Kosong: edit assets/flutter_assets/assets/github_config.json lewat MT Manager setelah build.' : 'Token ditemukan di JSON aset APK.'), trailing: Icon(token.text.trim().isEmpty ? Icons.warning_amber_rounded : Icons.check_circle, color: token.text.trim().isEmpty ? Colors.orange : Colors.green))),
+          const SizedBox(height: 8), const Text('Setelah APK dibuild, buka dengan MT Manager → assets/flutter_assets/assets/github_config.json → isi github_token → simpan dan sign ulang APK. Token di APK dapat diekstrak; batasi akses token.', style: TextStyle(fontSize: 12, color: Colors.black54)),
           const SizedBox(height: 10), OutlinedButton.icon(onPressed: busy ? null : _testConnection, icon: const Icon(Icons.link), label: const Text('Tes koneksi GitHub')),
           const SizedBox(height: 18), _section('3', 'Proses build'),
           Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
