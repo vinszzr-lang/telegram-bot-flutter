@@ -1,11 +1,54 @@
-# Chat APK
+# Flutter Cloud Builder — Full JSON Config + ZIP Auto-Detect
 
-Bright realtime chat app using Supabase.
+Aplikasi Flutter Android untuk mengirim source ZIP ke GitHub dan membangun APK lewat GitHub Actions tanpa server backend tambahan.
 
-Build:
-```bash
-flutter pub get
-flutter build apk --release --split-per-abi
+## Fitur
+- Konfigurasi GitHub di `assets/github_config.json`: owner/username, repository, branch, dan token.
+- Memilih ZIP proyek Flutter dari penyimpanan Android.
+- Auto-detect proyek walau struktur ZIP berbeda, misalnya:
+  - `project.zip -> pubspec.yaml` dan `lib/main.dart` di root.
+  - `project.zip -> nama-folder/pubspec.yaml` dan `nama-folder/lib/main.dart`.
+  - `project.zip -> folder-a/folder-b/pubspec.yaml` dan `folder-a/folder-b/lib/main.dart`.
+- Memasang `.github/workflows/build-flutter-apk.yml` ke repository secara otomatis jika belum ada.
+- Workflow memeriksa ZIP dengan aman, mencari proyek Flutter yang valid, lalu menjalankan `flutter pub get` dan `flutter build apk --release --split-per-abi`.
+- Jika file platform Android tidak ada, workflow mencoba membuat kerangka Android dengan `flutter create --platforms=android .`.
+- Pantau build, timer, status, batalkan run, download APK, dan kumpulkan ZIP diagnostik ketika build gagal.
+
+## Konfigurasi sebelum build APK aplikasi ini
+Edit `assets/github_config.json`:
+
+```json
+{
+  "github_owner": "USERNAME_ATAU_ORGANISASI_GITHUB",
+  "github_repo": "NAMA_REPOSITORY",
+  "github_branch": "main",
+  "github_token": "PASTE_GITHUB_TOKEN_HERE"
+}
 ```
 
-Supabase URL and publishable key are configured in `lib/main.dart`.
+Isi token dengan GitHub Personal Access Token khusus repository tersebut. Untuk fine-grained token, beri akses minimum yang diperlukan, termasuk Contents read/write, Actions read/write, dan Workflows read/write. Aktifkan GitHub Actions pada repository. Nama izin dapat berbeda sesuai jenis token dan kebijakan organisasi.
+
+Lalu build ulang aplikasi Cloud Builder agar konfigurasi JSON ikut dibundel:
+
+```bash
+flutter pub get
+flutter build apk --release
+```
+
+Owner/repository/branch dari JSON digunakan sebagai nilai awal. Kolom di aplikasi tetap bisa diedit untuk sesi berjalan.
+
+## Cara pakai
+1. Buat repository GitHub kosong atau repository khusus build, lalu aktifkan Actions.
+2. Konfigurasikan `assets/github_config.json`, build APK Cloud Builder, lalu instal APK tersebut.
+3. Pilih ZIP source Flutter dari HP dan tekan Mulai Build APK.
+4. Pantau proses; jika berhasil, unduh APK hasil build. Jika gagal, unduh ZIP diagnostik.
+
+## Persyaratan ZIP source
+ZIP harus berisi setidaknya `pubspec.yaml` dan `lib/main.dart` di dalam satu direktori proyek yang sama. Tidak masalah bila direktori itu berada di root ZIP atau dibungkus beberapa folder. ZIP berisi APK saja bukan source Flutter dan tidak dapat dibangun ulang.
+
+## Catatan keamanan dan batasan
+- Token di JSON dalam APK dapat diekstrak oleh siapa pun yang memiliki APK. Walaupun pemakainya hanya satu orang, gunakan fine-grained token untuk satu repository, izin minimum, masa berlaku singkat, dan cabut token bila tidak dibutuhkan lagi. Cara paling aman adalah memasukkan token saat runtime atau memakai backend, bukan membundelnya.
+- Source ZIP diunggah sebagai file ke repository target pada `build-inputs/`. Gunakan repository privat khusus build dan hapus file source setelah selesai jika diperlukan.
+- Batas ZIP upload aplikasi: 24 MB karena menggunakan GitHub Contents API.
+- Build berlangsung di runner GitHub, bukan di HP. APK release yang dihasilkan menggunakan signing debug untuk pengujian; untuk distribusi publik, atur signing release sendiri.
+- Build diagnostik dapat mencakup log dan informasi proyek. Periksa isinya sebelum dibagikan.

@@ -1,11 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
 
     <application
         android:name="${applicationName}"
-        android:label="Chat"
+        android:label="Flutter Cloud Builder"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
         android:hardwareAccelerated="true">
@@ -22,17 +20,7 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <intent-filter android:label="Supabase OAuth">
-                <action android:name="android.intent.action.VIEW"/>
-                <category android:name="android.intent.category.DEFAULT"/>
-                <category android:name="android.intent.category.BROWSABLE"/>
-                <data android:scheme="com.nullx.evo" android:host="login-callback"/>
-            </intent-filter>
         </activity>
-        <service
-            android:name=".MirrorService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection"/>
         <meta-data android:name="flutterEmbedding" android:value="2"/>
     </application>
 </manifest>

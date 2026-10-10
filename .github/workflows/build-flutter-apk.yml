@@ -1,0 +1,211 @@
+name: Build Flutter APK
+run-name: Mobile build ${{ inputs.build_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_path:
+        description: 'Repository path of uploaded source ZIP'
+        required: true
+        type: string
+      build_id:
+        description: 'Unique build identifier'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Safely extract ZIP and auto-detect Flutter project
+        id: extract
+        shell: bash
+        env:
+          SOURCE_PATH: ${{ inputs.source_path }}
+          BUILD_ID: ${{ inputs.build_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$SOURCE_PATH" != build-inputs/*.zip || "$SOURCE_PATH" == *..* ]]; then
+            echo 'Invalid source ZIP path. Expected build-inputs/*.zip.' | tee build-error.log
+            exit 1
+          fi
+          if [[ ! -f "$GITHUB_WORKSPACE/$SOURCE_PATH" ]]; then
+            echo "Source ZIP not found: $SOURCE_PATH" | tee build-error.log
+            exit 1
+          fi
+          mkdir -p /tmp/flutter-source
+          python3 - "$GITHUB_WORKSPACE/$SOURCE_PATH" /tmp/flutter-source <<'PYTHON'
+          import os, sys, zipfile
+          archive, destination = sys.argv[1], os.path.realpath(sys.argv[2])
+          total = 0
+          with zipfile.ZipFile(archive) as z:
+              for item in z.infolist():
+                  name = item.filename.replace('\\', '/')
+                  if name.startswith('/') or any(part == '..' for part in name.split('/')):
+                      raise SystemExit('ZIP contains an unsafe path: ' + item.filename)
+                  total += item.file_size
+                  if total > 2 * 1024 * 1024 * 1024:
+                      raise SystemExit('ZIP expands beyond the 2 GB safety limit.')
+                  target = os.path.realpath(os.path.join(destination, name))
+                  if target != destination and not target.startswith(destination + os.sep):
+                      raise SystemExit('ZIP path escapes extraction folder: ' + item.filename)
+                  if item.is_dir():
+                      os.makedirs(target, exist_ok=True)
+                  else:
+                      os.makedirs(os.path.dirname(target), exist_ok=True)
+                      with z.open(item) as src, open(target, 'wb') as dst:
+                          while True:
+                              chunk = src.read(1024 * 1024)
+                              if not chunk: break
+                              dst.write(chunk)
+          print(f'Extracted ZIP safely; uncompressed size: {total} bytes')
+          PYTHON
+          PROJECT_DIR="$(python3 - /tmp/flutter-source <<'PYTHON'
+          import os, sys
+          base = os.path.realpath(sys.argv[1])
+          candidates = []
+          for current, dirs, files in os.walk(base):
+              dirs[:] = [d for d in dirs if d not in {'.git', '.dart_tool', 'build', '.idea'}]
+              if 'pubspec.yaml' not in files:
+                  continue
+              rel = os.path.relpath(current, base)
+              score = 0
+              if os.path.isfile(os.path.join(current, 'lib', 'main.dart')): score += 100
+              elif os.path.isdir(os.path.join(current, 'lib')): score += 40
+              if os.path.isfile(os.path.join(current, 'android', 'app', 'build.gradle')) or os.path.isfile(os.path.join(current, 'android', 'app', 'build.gradle.kts')): score += 30
+              if os.path.isfile(os.path.join(current, 'pubspec.lock')): score += 5
+              if os.path.isfile(os.path.join(current, 'lib', 'main.dart')):
+                  candidates.append((score, len(rel.split(os.sep)) if rel != '.' else 0, current))
+          if not candidates:
+              print('ERROR: Tidak ditemukan proyek Flutter yang memiliki pubspec.yaml dan lib/main.dart.', file=sys.stderr)
+              print('Pastikan ZIP berisi proyek Flutter, bukan ZIP berisi APK saja.', file=sys.stderr)
+              sys.exit(2)
+          candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+          print(candidates[0][2])
+          PYTHON
+          )" || {
+            echo 'Could not detect Flutter project. Expected pubspec.yaml and lib/main.dart somewhere inside ZIP.' | tee -a build-error.log
+            exit 1
+          }
+          if [[ ! -f "$PROJECT_DIR/pubspec.yaml" || ! -f "$PROJECT_DIR/lib/main.dart" ]]; then
+            echo 'Detected directory is missing pubspec.yaml or lib/main.dart.' | tee -a build-error.log
+            exit 1
+          fi
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Project detected automatically: $PROJECT_DIR" | tee -a build-error.log
+          echo 'ZIP layout supported: pubspec.yaml at ZIP root or inside one/multiple nested folders.' | tee -a build-error.log
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter stable
+        if: steps.extract.outcome == 'success'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Android platform files if missing
+        id: platform
+        if: steps.extract.outcome == 'success'
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.extract.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          if [[ ! -d android || ( ! -f android/app/build.gradle && ! -f android/app/build.gradle.kts ) ]]; then
+            echo 'Android platform files missing; generating Android scaffolding with flutter create.'
+            flutter create --platforms=android .
+          fi
+
+      - name: Get dependencies and build APK
+        id: flutter_build
+        if: steps.extract.outcome == 'success' && steps.platform.outcome == 'success'
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.extract.outputs.project_dir }}
+          BUILD_ID: ${{ inputs.build_id }}
+        run: |
+          set -uo pipefail
+          cd "$PROJECT_DIR"
+          mkdir -p "$GITHUB_WORKSPACE/build-diagnostics"
+          LOG="$GITHUB_WORKSPACE/build-diagnostics/build.log"
+          echo "Build ID: $BUILD_ID" | tee "$LOG"
+          echo "Detected project: $PROJECT_DIR" | tee -a "$LOG"
+          echo 'Flutter version:' | tee -a "$LOG"
+          flutter --version 2>&1 | tee -a "$LOG"
+          echo -e '\n===== flutter pub get =====' | tee -a "$LOG"
+          flutter pub get 2>&1 | tee -a "$LOG"
+          PUB_STATUS=${PIPESTATUS[0]}
+          if [[ $PUB_STATUS -ne 0 ]]; then
+            echo "flutter pub get failed with exit code $PUB_STATUS" | tee -a "$LOG"
+            exit "$PUB_STATUS"
+          fi
+          echo -e '\n===== flutter build apk --release --split-per-abi =====' | tee -a "$LOG"
+          flutter build apk --release --split-per-abi 2>&1 | tee -a "$LOG"
+          BUILD_STATUS=${PIPESTATUS[0]}
+          echo "Build exit code: $BUILD_STATUS" | tee -a "$LOG"
+          exit "$BUILD_STATUS"
+
+      - name: Collect failure diagnostics
+        if: always() && (steps.extract.outcome != 'success' || steps.platform.outcome == 'failure' || steps.flutter_build.outcome != 'success')
+        shell: bash
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+          PROJECT_DIR: ${{ steps.extract.outputs.project_dir }}
+        run: |
+          mkdir -p build-diagnostics
+          {
+            echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Build ID: $BUILD_ID"
+            echo "Commit: $GITHUB_SHA"
+            echo "Runner: $RUNNER_OS"
+            echo "Event: $GITHUB_EVENT_NAME"
+            echo
+            echo '===== GitHub Actions context ====='
+            env | grep -E '^(GITHUB_RUN_ID|GITHUB_REPOSITORY|GITHUB_REF|RUNNER_OS)=' || true
+          } > build-diagnostics/summary.txt
+          if [[ -f build-error.log ]]; then cp build-error.log build-diagnostics/extract-error.log; fi
+          if [[ -n "$PROJECT_DIR" && -f "$PROJECT_DIR/pubspec.yaml" ]]; then
+            cp "$PROJECT_DIR/pubspec.yaml" build-diagnostics/pubspec.yaml || true
+          fi
+          if [[ -f "$GITHUB_WORKSPACE/build-diagnostics/build.log" ]]; then :; fi
+          flutter --version > build-diagnostics/flutter-version.txt 2>&1 || true
+          (cd build-diagnostics && zip -qr "$GITHUB_WORKSPACE/flutter-build-diagnostics.zip" .)
+
+      - name: Upload release APKs
+        if: success() && steps.flutter_build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-release-apks
+          path: ${{ steps.extract.outputs.project_dir }}/build/app/outputs/flutter-apk/*-release.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload diagnostic ZIP on failure
+        if: always() && (steps.extract.outcome != 'success' || steps.platform.outcome == 'failure' || steps.flutter_build.outcome != 'success')
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-build-diagnostics
+          path: flutter-build-diagnostics.zip
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Fail workflow when build failed
+        if: always() && (steps.extract.outcome != 'success' || steps.platform.outcome == 'failure' || steps.flutter_build.outcome != 'success')
+        shell: bash
+        run: exit 1

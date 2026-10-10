@@ -1,1228 +1,460 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
+import 'package:archive/archive.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:http/http.dart' as http;
+import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-const supabaseUrl = 'https://addcybagfkoqietbpshd.supabase.co';
-const supabasePublishableKey = 'sb_publishable_w2YDgscoFdW-JjQcXq_Cvw_iSCLD-9N';
-const red = Color(0xFFFF3B55);
-const bg = Color(0xFFF7F8FC);
-final supabase = Supabase.instance.client;
+void main() => runApp(const CloudBuilderApp());
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await Supabase.initialize(
-    url: supabaseUrl,
-    publishableKey: supabasePublishableKey,
-  );
-  runApp(const ChatApp());
-}
-
-class ChatApp extends StatelessWidget {
-  const ChatApp({super.key});
+class CloudBuilderApp extends StatelessWidget {
+  const CloudBuilderApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Chat',
-      theme: ThemeData(
-        useMaterial3: true,
-        scaffoldBackgroundColor: bg,
-        colorScheme: ColorScheme.fromSeed(seedColor: red),
-        inputDecorationTheme: const InputDecorationTheme(
-          border: OutlineInputBorder(),
+  Widget build(BuildContext context) => MaterialApp(
+        title: 'Flutter Cloud Builder',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          useMaterial3: true,
+          colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF6658D3)),
+          scaffoldBackgroundColor: const Color(0xFFF6F6FB),
+          inputDecorationTheme: const InputDecorationTheme(
+            border: OutlineInputBorder(), filled: true, fillColor: Colors.white,
+          ),
         ),
-      ),
-      home: const AuthGate(),
-    );
-  }
+        home: const BuilderHome(),
+      );
 }
 
-class AuthGate extends StatefulWidget {
-  const AuthGate({super.key});
-
+class BuilderHome extends StatefulWidget {
+  const BuilderHome({super.key});
   @override
-  State<AuthGate> createState() => _AuthGateState();
+  State<BuilderHome> createState() => _BuilderHomeState();
 }
 
-class _AuthGateState extends State<AuthGate> {
-  StreamSubscription<AuthState>? subscription;
+class _BuilderHomeState extends State<BuilderHome> {
+  final owner = TextEditingController();
+  final repo = TextEditingController();
+  final branch = TextEditingController(text: 'main');
+  final token = TextEditingController();
+  Timer? ticker;
+  DateTime? startedAt;
+  Duration elapsed = Duration.zero;
+  PlatformFile? selected;
+  String status = 'Siap untuk build';
+  String detail = 'Pilih ZIP proyek Flutter. Aplikasi otomatis mencari pubspec.yaml dan lib/main.dart meskipun ada di folder bertingkat.';
+  String? runId;
+  String? artifactUrl;
+  String? artifactName;
+  String? failureZipPath;
+  String? uploadedSourcePath;
+  bool busy = false;
+  bool terminal = false;
+  bool obscureToken = true;
+  double progress = 0;
+  String phase = 'Menunggu';
+  final List<String> logs = [];
+  static const api = 'https://api.github.com';
 
   @override
   void initState() {
     super.initState();
-    subscription = supabase.auth.onAuthStateChange.listen((_) {
-      if (mounted) setState(() {});
+    _loadSettings();
+  }
+
+  @override
+  void dispose() {
+    ticker?.cancel();
+    owner.dispose(); repo.dispose(); branch.dispose(); token.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadSettings() async {
+    final p = await SharedPreferences.getInstance();
+    var bundledOwner = '';
+    var bundledRepo = '';
+    var bundledBranch = '';
+    var bundledToken = '';
+    try {
+      final configText = await rootBundle.loadString('assets/github_config.json');
+      final config = jsonDecode(configText) as Map<String, dynamic>;
+      String readConfig(String key) => (config[key] ?? '').toString().trim();
+      bundledOwner = readConfig('github_owner');
+      bundledRepo = readConfig('github_repo');
+      bundledBranch = readConfig('github_branch');
+      final value = readConfig('github_token');
+      if (value.isNotEmpty && value != 'PASTE_GITHUB_TOKEN_HERE') bundledToken = value;
+    } catch (_) { /* JSON config is optional; saved settings can be used instead. */ }
+    if (!mounted) return;
+    setState(() {
+      owner.text = bundledOwner.isNotEmpty && bundledOwner != 'GITHUB_USERNAME_OR_ORGANIZATION' ? bundledOwner : (p.getString('owner') ?? '');
+      repo.text = bundledRepo.isNotEmpty && bundledRepo != 'REPOSITORY_NAME' ? bundledRepo : (p.getString('repo') ?? '');
+      branch.text = bundledBranch.isNotEmpty ? bundledBranch : (p.getString('branch') ?? 'main');
+      // JSON config takes priority so the APK uses the bundled GitHub configuration.
+      token.text = bundledToken.isNotEmpty ? bundledToken : (p.getString('token') ?? '');
     });
   }
 
-  @override
-  void dispose() {
-    subscription?.cancel();
-    super.dispose();
+  Future<void> _saveSettings() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString('owner', owner.text.trim());
+    await p.setString('repo', repo.text.trim());
+    await p.setString('branch', branch.text.trim().isEmpty ? 'main' : branch.text.trim());
+    await p.setString('token', token.text.trim());
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final user = supabase.auth.currentUser;
-    if (user == null) return const LoginPage();
+  Map<String, String> get headers => {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': 'Bearer ${token.text.trim()}',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'Flutter-Cloud-Builder-Android',
+      };
 
-    return FutureBuilder<Map<String, dynamic>?>(
-      future: profileOf(user.id),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const Splash();
-        }
-        final profile = snapshot.data;
-        final username = (profile?['username'] ?? '').toString().trim();
-        if (profile == null || username.isEmpty) return const UsernamePage();
-        return HomePage(profile: profile);
-      },
+  String get repoPath => '${owner.text.trim()}/${repo.text.trim()}';
+  Uri endpoint(String path) => Uri.parse('$api/repos/$repoPath/$path');
+
+  void addLog(String s) {
+    if (!mounted) return;
+    setState(() {
+      logs.insert(0, '[${DateTime.now().toLocal().toString().substring(11, 19)}] $s');
+      if (logs.length > 80) logs.removeLast();
+    });
+  }
+
+  Future<void> _pickZip() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom, allowedExtensions: const ['zip'], withData: false,
     );
-  }
-}
-
-Future<Map<String, dynamic>?> profileOf(String id) async {
-  try {
-    final row = await supabase.from('profiles').select().eq('id', id).maybeSingle();
-    if (row == null) return null;
-    return Map<String, dynamic>.from(row);
-  } catch (_) {
-    return null;
-  }
-}
-
-class Splash extends StatelessWidget {
-  const Splash({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(body: Center(child: CircularProgressIndicator()));
-  }
-}
-
-class LoginPage extends StatelessWidget {
-  const LoginPage({super.key});
-
-  Future<void> login() {
-    return supabase.auth.signInWithOAuth(
-      OAuthProvider.google,
-      redirectTo: 'com.nullx.evo://login-callback',
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 92,
-                height: 92,
-                decoration: BoxDecoration(
-                  color: red,
-                  borderRadius: BorderRadius.circular(28),
-                ),
-                child: const Icon(
-                  Icons.chat_bubble_rounded,
-                  color: Colors.white,
-                  size: 50,
-                ),
-              ),
-              const SizedBox(height: 24),
-              const Text(
-                'Chat',
-                style: TextStyle(fontSize: 38, fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Ngobrol cepat, simpel, dan realtime.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.black54, fontSize: 16),
-              ),
-              const SizedBox(height: 32),
-              SizedBox(
-                width: double.infinity,
-                height: 54,
-                child: FilledButton.icon(
-                  onPressed: login,
-                  icon: const Icon(Icons.g_mobiledata_rounded, size: 30),
-                  label: const Text(
-                    'Lanjut dengan Google',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class UsernamePage extends StatefulWidget {
-  const UsernamePage({super.key});
-
-  @override
-  State<UsernamePage> createState() => _UsernamePageState();
-}
-
-class _UsernamePageState extends State<UsernamePage> {
-  final controller = TextEditingController();
-  bool busy = false;
-  String? error;
-
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
-  }
-
-  Future<void> save() async {
-    final username = controller.text.trim().toLowerCase().replaceAll(' ', '');
-    if (username.length < 3 || !RegExp(r'^[a-z0-9_.]+$').hasMatch(username)) {
-      setState(() => error = 'Username minimal 3 karakter.');
+    if (result == null || result.files.isEmpty) return;
+    final f = result.files.single;
+    if (f.path == null) {
+      _message('File tidak bisa dibaca dari penyimpanan ini. Coba pilih ZIP lokal.');
       return;
     }
+    setState(() { selected = f; status = 'File dipilih'; detail = f.name; });
+  }
 
+  Future<void> _startBuild() async {
+    if (busy) return;
+    if (owner.text.trim().isEmpty || repo.text.trim().isEmpty || token.text.trim().isEmpty) {
+      _message('Isi GitHub owner, nama repository, dan token terlebih dahulu.'); return;
+    }
+    if (selected?.path == null) { _message('Pilih file ZIP proyek Flutter dulu.'); return; }
+    final source = File(selected!.path!);
+    if (!await source.exists()) { _message('File ZIP tidak ditemukan.'); return; }
+    final length = await source.length();
+    if (length > 24 * 1024 * 1024) {
+      _message('ZIP lebih dari 24 MB. GitHub Contents API punya batas ukuran praktis; kecilkan ZIP (hapus build/, .dart_tool/, .git/).'); return;
+    }
     setState(() {
-      busy = true;
-      error = null;
+      busy = true; terminal = false; runId = null; artifactUrl = null;
+      artifactName = null; failureZipPath = null; elapsed = Duration.zero;
+      startedAt = DateTime.now(); progress = 0.04; phase = 'Mengunggah source';
+      status = 'Mengunggah proyek ke GitHub…'; detail = selected!.name; logs.clear();
     });
-
+    await _saveSettings();
+    ticker?.cancel();
+    ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (startedAt != null && mounted) setState(() => elapsed = DateTime.now().difference(startedAt!));
+    });
     try {
-      final existing = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('username', username)
-          .maybeSingle();
-      if (existing != null) {
-        if (mounted) {
-          setState(() {
-            busy = false;
-            error = 'Username sudah dipakai.';
+      final buildId = '${DateTime.now().millisecondsSinceEpoch}-${Random().nextInt(9000) + 1000}';
+      await _ensureWorkflow();
+      final zipBytes = await source.readAsBytes();
+      final inputPath = 'build-inputs/project-$buildId.zip';
+      uploadedSourcePath = inputPath;
+      addLog('Mengunggah ${selected!.name} (${_size(length)}) ke $repoPath/$inputPath');
+      final putUri = endpoint('contents/$inputPath');
+      final put = await http.put(putUri, headers: headers, body: jsonEncode({
+        'message': 'Upload Flutter build source $buildId',
+        'content': base64Encode(zipBytes),
+        'branch': branch.text.trim().isEmpty ? 'main' : branch.text.trim(),
+      })).timeout(const Duration(minutes: 3));
+      if (put.statusCode < 200 || put.statusCode >= 300) {
+        throw Exception('Upload source gagal (${put.statusCode}): ${_apiMessage(put.body)}');
+      }
+      addLog('Source terunggah. Memulai GitHub Actions…');
+      if (mounted) setState(() { phase = 'Memulai workflow'; progress = 0.12; status = 'Memulai build di GitHub…'; });
+      http.Response? dispatch;
+      for (var attempt = 0; attempt < 3; attempt++) {
+        dispatch = await http.post(
+          endpoint('actions/workflows/build-flutter-apk.yml/dispatches'),
+          headers: headers,
+          body: jsonEncode({'ref': branch.text.trim().isEmpty ? 'main' : branch.text.trim(), 'inputs': {'source_path': inputPath, 'build_id': buildId}}),
+        ).timeout(const Duration(seconds: 45));
+        if (dispatch.statusCode == 204 || dispatch.statusCode == 200) break;
+        if (attempt < 2 && (dispatch.statusCode == 404 || dispatch.statusCode == 422)) {
+          addLog('GitHub sedang mendaftarkan workflow; mencoba lagi…');
+          await Future<void>.delayed(const Duration(seconds: 4));
+        } else break;
+      }
+      if (dispatch == null || (dispatch.statusCode != 204 && dispatch.statusCode != 200)) {
+        throw Exception('Gagal menjalankan workflow (${dispatch?.statusCode}): ${_apiMessage(dispatch?.body ?? '')}. Pastikan Actions aktif dan token memiliki izin Workflows.');
+      }
+      addLog('Workflow dikirim. Mencari run ID…');
+      if (mounted) setState(() { phase = 'Menunggu run'; progress = 0.18; status = 'Memantau Proses Di Github…'; detail = 'Workflow dikirim, sedang mencari ID build.'; });
+      await _monitor(buildId);
+    } catch (e) {
+      addLog('ERROR: $e');
+      if (mounted) setState(() { status = 'Gagal memulai build'; detail = '$e'; phase = 'Error'; terminal = true; busy = false; });
+      ticker?.cancel();
+    }
+  }
+
+
+  Future<void> _ensureWorkflow() async {
+    final path = 'contents/.github/workflows/build-flutter-apk.yml';
+    final existing = await http.get(endpoint(path), headers: headers).timeout(const Duration(seconds: 20));
+    if (existing.statusCode == 200) {
+      addLog('Workflow build-flutter-apk.yml sudah ada di repository.');
+      return;
+    }
+    if (existing.statusCode != 404) {
+      throw Exception('Tidak bisa memeriksa workflow (${existing.statusCode}): ${_apiMessage(existing.body)}');
+    }
+    addLog('Memasang workflow GitHub Actions ke repository…');
+    final workflow = await rootBundle.loadString('assets/build-flutter-apk.yml');
+    final created = await http.put(endpoint(path), headers: headers, body: jsonEncode({
+      'message': 'Add Flutter APK builder workflow',
+      'content': base64Encode(utf8.encode(workflow)),
+      'branch': branch.text.trim().isEmpty ? 'main' : branch.text.trim(),
+    })).timeout(const Duration(seconds: 30));
+    if (created.statusCode < 200 || created.statusCode >= 300) {
+      throw Exception('Gagal memasang workflow (${created.statusCode}): ${_apiMessage(created.body)}');
+    }
+    addLog('Workflow berhasil dipasang.');
+  }
+
+  Future<void> _monitor(String buildId) async {
+    final started = DateTime.now();
+    while (busy && !terminal && DateTime.now().difference(started) < const Duration(minutes: 90)) {
+      try {
+        final runsResp = await http.get(endpoint('actions/workflows/build-flutter-apk.yml/runs?per_page=20'), headers: headers).timeout(const Duration(seconds: 30));
+        if (runsResp.statusCode == 401 || runsResp.statusCode == 403) throw Exception('Token tidak punya izin membaca Actions atau token tidak valid.');
+        if (runsResp.statusCode != 200) throw Exception('Tidak bisa membaca daftar run (${runsResp.statusCode}): ${_apiMessage(runsResp.body)}');
+        final data = jsonDecode(runsResp.body) as Map<String, dynamic>;
+        final runs = (data['workflow_runs'] as List? ?? []).cast<Map<String, dynamic>>();
+        Map<String, dynamic>? found;
+        for (final r in runs) {
+          final title = '${r['display_title'] ?? ''}';
+          if (title.contains(buildId)) { found = r; break; }
+        }
+        if (found != null) {
+          final id = '${found['id']}';
+          final runStatus = '${found['status'] ?? ''}';
+          final conclusion = '${found['conclusion'] ?? ''}';
+          if (runId != id) { runId = id; addLog('Run ditemukan: #$id'); }
+          if (mounted) setState(() {
+            phase = runStatus == 'completed' ? 'Selesai' : 'Build berjalan';
+            progress = runStatus == 'completed' ? 0.92 : max(progress, 0.25);
+            status = runStatus == 'completed' ? (conclusion == 'success' ? 'Build berhasil!' : 'Build gagal') : 'Memantau Proses Di Github…';
+            detail = runStatus == 'completed' ? 'Kesimpulan: $conclusion' : 'Status: $runStatus • Run #$id';
           });
-        }
-        return;
-      }
-
-      final user = supabase.auth.currentUser!;
-      final metadata = user.userMetadata ?? <String, dynamic>{};
-      await supabase.from('profiles').upsert({
-        'id': user.id,
-        'username': username,
-        'display_name': metadata['full_name'] ?? username,
-        'avatar_url': metadata['avatar_url'],
-      });
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          busy = false;
-          error = 'Gagal menyimpan username.';
-        });
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Text(
-                'Pilih username',
-                style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Orang lain menemukan kamu lewat username ini.',
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 24),
-              TextField(
-                controller: controller,
-                autofocus: true,
-                decoration: InputDecoration(
-                  labelText: 'Username',
-                  prefixText: '@',
-                  errorText: error,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 18),
-              SizedBox(
-                width: double.infinity,
-                height: 52,
-                child: FilledButton(
-                  onPressed: busy ? null : save,
-                  child: busy
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Simpan'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class HomePage extends StatefulWidget {
-  final Map<String, dynamic> profile;
-
-  const HomePage({super.key, required this.profile});
-
-  @override
-  State<HomePage> createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> {
-  int tab = 0;
-  final searchController = TextEditingController();
-  List<Map<String, dynamic>> chats = [];
-  bool loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    loadChats();
-  }
-
-  @override
-  void dispose() {
-    searchController.dispose();
-    super.dispose();
-  }
-
-  Future<void> loadChats() async {
-    try {
-      final me = supabase.auth.currentUser!.id;
-      final memberships = await supabase
-          .from('conversation_members')
-          .select('conversation_id')
-          .eq('user_id', me);
-      final ids = (memberships as List)
-          .map((row) => row['conversation_id'])
-          .toList();
-
-      if (ids.isEmpty) {
-        if (mounted) setState(() { chats = []; loading = false; });
-        return;
-      }
-
-      final rows = await supabase
-          .from('conversations')
-          .select()
-          .inFilter('id', ids)
-          .order('updated_at', ascending: false);
-      final result = <Map<String, dynamic>>[];
-
-      for (final item in rows as List) {
-        final row = Map<String, dynamic>.from(item);
-        final members = await supabase
-            .from('conversation_members')
-            .select('user_id')
-            .eq('conversation_id', row['id']);
-        String? otherId;
-        for (final member in members as List) {
-          final id = member['user_id']?.toString();
-          if (id != null && id != me) {
-            otherId = id;
-            break;
+          if (runStatus == 'completed') {
+            if (conclusion == 'success') await _fetchArtifacts(id, false);
+            else await _fetchArtifacts(id, true);
+            await _cleanupUploadedSource();
+            if (mounted) setState(() { terminal = true; busy = false; progress = 1; });
+            ticker?.cancel();
+            return;
           }
+        } else {
+          if (mounted) setState(() { status = 'Memantau Proses Di Github…'; detail = 'Menunggu GitHub membuat run'; });
         }
-        result.add({...row, 'other_profile': otherId == null ? null : await profileOf(otherId)});
+      } catch (e) {
+        addLog('Pemantauan: $e');
+        if (mounted) setState(() { detail = 'Koneksi/pemantauan terganggu: $e'; });
       }
-
-      if (mounted) setState(() { chats = result; loading = false; });
-    } catch (_) {
-      if (mounted) setState(() => loading = false);
+      await Future<void>.delayed(const Duration(seconds: 8));
+    }
+    if (busy && !terminal) {
+      if (mounted) setState(() { status = 'Pemantauan berhenti'; detail = 'Batas 90 menit tercapai. Run GitHub mungkin masih berjalan.'; busy = false; terminal = true; });
+      ticker?.cancel();
+      await _cleanupUploadedSource();
     }
   }
 
-  Future<void> showSearch() async {
-    searchController.clear();
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Cari username'),
-        content: TextField(
-          controller: searchController,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: 'username',
-            prefixText: '@',
-          ),
-          onSubmitted: (_) {
-            Navigator.pop(dialogContext);
-            searchUsers();
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Batal'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(dialogContext);
-              searchUsers();
-            },
-            child: const Text('Cari'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> searchUsers() async {
-    final q = searchController.text.trim().replaceFirst('@', '').toLowerCase();
-    if (q.isEmpty) return;
-
+  Future<void> _cleanupUploadedSource() async {
+    final path = uploadedSourcePath;
+    if (path == null) return;
     try {
-      final rows = await supabase
-          .from('profiles')
-          .select()
-          .ilike('username', '%$q%')
-          .limit(20);
-      if (!mounted) return;
-
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        backgroundColor: Colors.white,
-        builder: (sheetContext) => SafeArea(
-          child: ListView(
-            shrinkWrap: true,
-            padding: const EdgeInsets.all(20),
-            children: [
-              const Text(
-                'Cari pengguna',
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 12),
-              ...(rows as List).map((item) {
-                final profile = Map<String, dynamic>.from(item);
-                return ListTile(
-                  leading: Avatar(
-                    url: profile['avatar_url'],
-                    name: profile['display_name'] ?? profile['username'],
-                  ),
-                  title: Text(profile['display_name'] ?? profile['username'] ?? ''),
-                  subtitle: Text('@${profile['username'] ?? ''}'),
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => ProfilePage(profile: profile),
-                      ),
-                    );
-                  },
-                );
-              }),
-            ],
-          ),
-        ),
-      );
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Pencarian gagal.')),
-        );
+      final get = await http.get(endpoint('contents/$path?ref=${Uri.encodeComponent(branch.text.trim().isEmpty ? 'main' : branch.text.trim())}'), headers: headers).timeout(const Duration(seconds: 20));
+      if (get.statusCode == 200) {
+        final sha = '${(jsonDecode(get.body) as Map<String, dynamic>)['sha']}';
+        final del = await http.delete(endpoint('contents/$path'), headers: headers, body: jsonEncode({
+          'message': 'Clean up temporary Flutter build source',
+          'sha': sha,
+          'branch': branch.text.trim().isEmpty ? 'main' : branch.text.trim(),
+        })).timeout(const Duration(seconds: 20));
+        if (del.statusCode >= 200 && del.statusCode < 300) addLog('Source ZIP sementara dihapus dari repository.');
+        else addLog('Catatan: source ZIP belum terhapus otomatis (${del.statusCode}).');
       }
+    } catch (e) { addLog('Source ZIP cleanup gagal: $e'); }
+    uploadedSourcePath = null;
+  }
+
+  Future<void> _fetchArtifacts(String id, bool failed) async {
+    addLog('Mengambil artifact hasil build…');
+    final res = await http.get(endpoint('actions/runs/$id/artifacts?per_page=100'), headers: headers).timeout(const Duration(seconds: 30));
+    if (res.statusCode != 200) { addLog('Gagal mengambil daftar artifact: ${res.statusCode}'); return; }
+    final artifacts = ((jsonDecode(res.body) as Map<String, dynamic>)['artifacts'] as List? ?? []).cast<Map<String, dynamic>>();
+    Map<String, dynamic>? chosen;
+    for (final a in artifacts) {
+      final n = '${a['name']}';
+      if (failed ? n == 'flutter-build-diagnostics' : n == 'flutter-release-apks') { chosen = a; break; }
     }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: bg,
-        title: const Text(
-          'Pesan',
-          style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
-        ),
-        actions: [
-          IconButton(onPressed: showSearch, icon: const Icon(Icons.search_rounded)),
-          IconButton(
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => SettingsPage(profile: widget.profile),
-              ),
-            ),
-            icon: const Icon(Icons.settings_outlined),
-          ),
-        ],
-      ),
-      body: tab == 0
-          ? RefreshIndicator(
-              onRefresh: loadChats,
-              child: loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : ListView(
-                      padding: const EdgeInsets.only(top: 8),
-                      children: [
-                        if (chats.isEmpty) const EmptyChats(),
-                        ...chats.map((chat) => ChatTile(data: chat)),
-                      ],
-                    ),
-            )
-          : ProfilePage(profile: widget.profile),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: tab,
-        onDestinationSelected: (index) => setState(() => tab = index),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline),
-            selectedIcon: Icon(Icons.chat_bubble),
-            label: 'Chat',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outline),
-            selectedIcon: Icon(Icons.person),
-            label: 'Profil',
-          ),
-        ],
-      ),
-      floatingActionButton: tab == 0
-          ? FloatingActionButton(
-              backgroundColor: red,
-              foregroundColor: Colors.white,
-              onPressed: showSearch,
-              child: const Icon(Icons.edit_rounded),
-            )
-          : null,
-    );
-  }
-}
-
-class EmptyChats extends StatelessWidget {
-  const EmptyChats({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.all(50),
-      child: Column(
-        children: [
-          Icon(Icons.forum_outlined, size: 70, color: red),
-          SizedBox(height: 15),
-          Text('Belum ada chat', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-          SizedBox(height: 5),
-          Text('Cari username untuk memulai percakapan.', textAlign: TextAlign.center),
-        ],
-      ),
-    );
-  }
-}
-
-class ChatTile extends StatelessWidget {
-  final Map<String, dynamic> data;
-
-  const ChatTile({super.key, required this.data});
-
-  @override
-  Widget build(BuildContext context) {
-    final profile = data['other_profile'] as Map<String, dynamic>?;
-    final name = profile?['display_name'] ?? profile?['username'] ?? 'Chat';
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 5),
-      leading: Avatar(url: profile?['avatar_url'], name: name),
-      title: Text(name.toString(), style: const TextStyle(fontWeight: FontWeight.w700)),
-      subtitle: Text('@${profile?['username'] ?? ''}'),
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => ChatPage(conversation: data)),
-      ),
-    );
-  }
-}
-
-class ProfilePage extends StatelessWidget {
-  final Map<String, dynamic> profile;
-
-  const ProfilePage({super.key, required this.profile});
-
-  Future<void> openChat(BuildContext context) async {
-    final me = supabase.auth.currentUser!.id;
-    final target = profile['id'].toString();
-
-    try {
-      final existing = await supabase
-          .from('conversation_members')
-          .select('conversation_id')
-          .eq('user_id', me);
-      for (final item in existing as List) {
-        final id = item['conversation_id'];
-        final other = await supabase
-            .from('conversation_members')
-            .select('user_id')
-            .eq('conversation_id', id)
-            .eq('user_id', target)
-            .maybeSingle();
-        if (other != null) {
-          if (!context.mounted) return;
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => ChatPage(conversation: {'id': id, 'other_profile': profile}),
-            ),
-          );
-          return;
+    if (chosen == null) {
+      addLog(failed ? 'Artifact ZIP error belum tersedia.' : 'APK artifact tidak ditemukan.');
+      if (failed && mounted) setState(() { detail = 'Build gagal. Buka run GitHub untuk melihat error; artifact diagnostik mungkin belum selesai diunggah.'; });
+      return;
+    }
+    artifactName = '${chosen['name']}';
+    artifactUrl = '${chosen['archive_download_url']}';
+    if (mounted) setState(() { phase = failed ? 'Mengambil ZIP error' : 'Mengambil APK'; progress = 0.96; });
+    final dl = await http.get(Uri.parse(artifactUrl!), headers: headers).timeout(const Duration(minutes: 3));
+    if (dl.statusCode != 200) { addLog('Download artifact gagal: ${dl.statusCode}'); return; }
+    final dir = await getApplicationDocumentsDirectory();
+    final out = Directory('${dir.path}/flutter_cloud_builder');
+    await out.create(recursive: true);
+    final zipFile = File('${out.path}/$artifactName-$id.zip');
+    await zipFile.writeAsBytes(dl.bodyBytes, flush: true);
+    if (failed) {
+      try {
+        final outer = ZipDecoder().decodeBytes(dl.bodyBytes);
+        final inner = outer.files.where((f) => f.isFile && f.name.toLowerCase().endsWith('.zip')).toList();
+        if (inner.isNotEmpty) {
+          final diagnostic = File('${out.path}/flutter-build-diagnostics-$id.zip');
+          await diagnostic.writeAsBytes(inner.first.content as List<int>, flush: true);
+          failureZipPath = diagnostic.path;
+        } else {
+          failureZipPath = zipFile.path;
         }
+      } catch (_) {
+        failureZipPath = zipFile.path;
       }
-
-      final conversation = await supabase
-          .from('conversations')
-          .insert({'type': 'direct'})
-          .select()
-          .single();
-      await supabase.from('conversation_members').insert([
-        {'conversation_id': conversation['id'], 'user_id': me},
-        {'conversation_id': conversation['id'], 'user_id': target},
-      ]);
-
-      if (!context.mounted) return;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ChatPage(
-            conversation: {'id': conversation['id'], 'other_profile': profile},
-          ),
-        ),
-      );
-    } catch (_) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Tidak bisa membuat chat.')),
-        );
+      addLog('ZIP diagnostik disimpan: $failureZipPath');
+      if (mounted) setState(() { status = 'Build gagal — ZIP error siap'; detail = 'ZIP berisi log build dan diagnostik sudah diunduh ke aplikasi.'; });
+    } else {
+      addLog('APK artifact ZIP berhasil diunduh. Mengekstrak APK…');
+      final archive = ZipDecoder().decodeBytes(dl.bodyBytes);
+      final apks = archive.files.where((f) => f.isFile && f.name.toLowerCase().endsWith('.apk')).toList();
+      for (final f in apks) {
+        final safeName = f.name.split('/').last;
+        final target = File('${out.path}/$safeName');
+        await target.writeAsBytes(f.content as List<int>, flush: true);
       }
+      if (mounted) setState(() { status = 'Build berhasil! APK siap diunduh'; detail = '${apks.length} APK ditemukan. Pilih file untuk memasang.'; progress = 1; });
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final own = profile['id'] == supabase.auth.currentUser?.id;
-    final name = profile['display_name'] ?? profile['username'] ?? '';
-    return Scaffold(
-      appBar: AppBar(title: const Text('Profil')),
-      body: ListView(
-        padding: const EdgeInsets.all(25),
-        children: [
-          Center(child: Avatar(url: profile['avatar_url'], name: name, size: 110)),
-          const SizedBox(height: 18),
-          Center(
-            child: Text(name.toString(), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
-          ),
-          Center(child: Text('@${profile['username'] ?? ''}', style: const TextStyle(color: Colors.black54))),
-          if ((profile['bio'] ?? '').toString().isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 18),
-              child: Text(profile['bio'].toString(), textAlign: TextAlign.center),
-            ),
-          if (!own) ...[
-            const SizedBox(height: 28),
-            FilledButton.icon(
-              onPressed: () => openChat(context),
-              icon: const Icon(Icons.chat_bubble_outline),
-              label: const Text('Mulai chat'),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class ChatPage extends StatefulWidget {
-  final Map<String, dynamic> conversation;
-
-  const ChatPage({super.key, required this.conversation});
-
-  @override
-  State<ChatPage> createState() => _ChatPageState();
-}
-
-class _ChatPageState extends State<ChatPage> {
-  final controller = TextEditingController();
-  final scroll = ScrollController();
-  final Map<String, GlobalKey> messageKeys = {};
-  List<Map<String, dynamic>> messages = [];
-  Map<String, dynamic>? reply;
-  bool typing = false;
-  Timer? typingTimer;
-  RealtimeChannel? channel;
-
-  @override
-  void initState() {
-    super.initState();
-    loadMessages();
-    channel = supabase
-        .channel('chat:${widget.conversation['id']}')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'messages',
-          filter: PostgresChangeFilter(
-            type: PostgresChangeFilterType.eq,
-            column: 'conversation_id',
-            value: widget.conversation['id'],
-          ),
-          callback: (_) => loadMessages(),
-        )
-        .subscribe();
-  }
-
-  @override
-  void dispose() {
-    typingTimer?.cancel();
-    if (channel != null) supabase.removeChannel(channel!);
-    controller.dispose();
-    scroll.dispose();
-    super.dispose();
-  }
-
-  Future<void> loadMessages() async {
+  Future<void> _cancelBuild() async {
+    final id = runId;
+    if (id == null) {
+      setState(() { busy = false; terminal = true; status = 'Dibatalkan'; detail = 'Build dibatalkan sebelum Run ID ditemukan. Jika GitHub sudah mulai menjalankan workflow, cek Actions untuk memastikan.'; });
+      ticker?.cancel();
+      return;
+    }
     try {
-      final rows = await supabase
-          .from('messages')
-          .select()
-          .eq('conversation_id', widget.conversation['id'])
-          .order('created_at');
-      final list = (rows as List).map((e) => Map<String, dynamic>.from(e)).toList();
-      if (mounted) {
-        setState(() => messages = list);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (scroll.hasClients) scroll.jumpTo(scroll.position.maxScrollExtent);
-        });
-      }
-    } catch (_) {}
-  }
-
-  void composerChanged(String value) {
-    typingTimer?.cancel();
-    final active = value.trim().isNotEmpty;
-    if (mounted && typing != active) setState(() => typing = active);
-    typingTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) setState(() => typing = false);
-    });
-  }
-
-  Future<void> send({String? content, String type = 'text', String? attachment}) async {
-    final text = content ?? controller.text.trim();
-    if (text.isEmpty && attachment == null) return;
-
-    await supabase.from('messages').insert({
-      'conversation_id': widget.conversation['id'],
-      'sender_id': supabase.auth.currentUser!.id,
-      'content': text,
-      'type': type,
-      'reply_to_id': reply?['id'],
-      'attachment_url': attachment,
-    });
-
-    controller.clear();
-    if (mounted) setState(() { reply = null; typing = false; });
-    await loadMessages();
-  }
-
-  Future<void> pickImage() async {
-    final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 85);
-    if (picked == null) return;
-    try {
-      final path = '${supabase.auth.currentUser!.id}/${DateTime.now().millisecondsSinceEpoch}.jpg';
-      await supabase.storage.from('media').upload(
-        path,
-        File(picked.path),
-        fileOptions: const FileOptions(upsert: true),
-      );
-      final url = supabase.storage.from('media').getPublicUrl(path);
-      await send(type: 'image', attachment: url);
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Upload gambar gagal.')),
-        );
-      }
-    }
-  }
-
-  Future<void> deleteMessage(Map<String, dynamic> message, bool everyone) async {
-    final query = supabase.from('messages').update({
-      'is_deleted': true,
-      'content': 'Pesan dihapus',
-    }).eq('id', message['id']);
-    if (everyone) {
-      await query.eq('sender_id', supabase.auth.currentUser!.id);
-    }
-    await loadMessages();
-  }
-
-  void jumpToMessage(String id) {
-    final key = messageKeys[id];
-    final context = key?.currentContext;
-    if (context != null) {
-      Scrollable.ensureVisible(
-        context,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final profile = widget.conversation['other_profile'] as Map<String, dynamic>?;
-    final name = profile?['display_name'] ?? profile?['username'] ?? 'Chat';
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Row(
-          children: [
-            Avatar(url: profile?['avatar_url'], name: name, size: 38),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(name.toString(), style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
-            ),
-          ],
-        ),
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: ListView.builder(
-              controller: scroll,
-              padding: const EdgeInsets.all(14),
-              itemCount: messages.length + (typing ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (index == messages.length) return const TypingBubble();
-                final message = messages[index];
-                final id = message['id']?.toString() ?? '$index';
-                final key = messageKeys.putIfAbsent(id, GlobalKey.new);
-                return KeyedSubtree(
-                  key: key,
-                  child: MessageBubble(
-                    msg: message,
-                    onReply: () => setState(() => reply = message),
-                    onDelete: deleteMessage,
-                    onJump: jumpToMessage,
-                  ),
-                );
-              },
-            ),
-          ),
-          if (reply != null)
-            Container(
-              color: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: Row(
-                children: [
-                  Container(
-                    width: 3,
-                    height: 38,
-                    color: reply!['sender_id'] == supabase.auth.currentUser?.id ? Colors.green : red,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Membalas: ${reply!['content'] ?? ''}',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => setState(() => reply = null),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-            ),
-          SafeArea(
-            child: Container(
-              color: Colors.white,
-              padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
-              child: Row(
-                children: [
-                  IconButton(onPressed: pickImage, icon: const Icon(Icons.photo_outlined)),
-                  Expanded(
-                    child: TextField(
-                      controller: controller,
-                      onChanged: composerChanged,
-                      maxLines: 5,
-                      minLines: 1,
-                      decoration: InputDecoration(
-                        hintText: 'Tulis pesan...',
-                        filled: true,
-                        fillColor: bg,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide.none,
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 5),
-                  CircleAvatar(
-                    backgroundColor: red,
-                    child: IconButton(
-                      onPressed: () => send(),
-                      color: Colors.white,
-                      icon: const Icon(Icons.send_rounded),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class TypingBubble extends StatelessWidget {
-  const TypingBubble({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.all(6),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18)),
-        child: const Text('Mengetik...', style: TextStyle(color: Colors.black54)),
-      ),
-    );
-  }
-}
-
-class MessageBubble extends StatelessWidget {
-  final Map<String, dynamic> msg;
-  final VoidCallback onReply;
-  final Future<void> Function(Map<String, dynamic>, bool) onDelete;
-  final ValueChanged<String> onJump;
-
-  const MessageBubble({
-    super.key,
-    required this.msg,
-    required this.onReply,
-    required this.onDelete,
-    required this.onJump,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final own = msg['sender_id'] == supabase.auth.currentUser?.id;
-    final deleted = msg['is_deleted'] == true;
-    final content = (msg['content'] ?? '').toString();
-    final replyId = msg['reply_to_id']?.toString();
-    final created = DateTime.tryParse('${msg['created_at']}')?.toLocal() ?? DateTime.now();
-
-    return GestureDetector(
-      onHorizontalDragEnd: (details) {
-        if ((details.primaryVelocity ?? 0) > 500) {
-          HapticFeedback.mediumImpact();
-          onReply();
-        }
-      },
-      onLongPress: () => showModalBottomSheet<void>(
-        context: context,
-        showDragHandle: true,
-        builder: (sheetContext) => SafeArea(
-          child: Wrap(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.reply),
-                title: const Text('Balas'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  onReply();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.delete_sweep_outlined),
-                title: const Text('Hapus untuk saya'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  onDelete(msg, false);
-                },
-              ),
-              if (own)
-                ListTile(
-                  leading: const Icon(Icons.delete_outline, color: red),
-                  title: const Text('Hapus untuk semua'),
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    onDelete(msg, true);
-                  },
-                ),
-            ],
-          ),
-        ),
-      ),
-      child: Align(
-        alignment: own ? Alignment.centerRight : Alignment.centerLeft,
-        child: Container(
-          margin: EdgeInsets.only(top: 4, bottom: 4, left: own ? 55 : 0, right: own ? 0 : 55),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: own ? red : Colors.white,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(18),
-              topRight: const Radius.circular(18),
-              bottomLeft: Radius.circular(own ? 18 : 4),
-              bottomRight: Radius.circular(own ? 4 : 18),
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (replyId != null)
-                GestureDetector(
-                  onTap: () => onJump(replyId),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.only(left: 8),
-                    margin: const EdgeInsets.only(bottom: 6),
-                    decoration: BoxDecoration(
-                      border: Border(left: BorderSide(color: own ? Colors.greenAccent : red, width: 3)),
-                    ),
-                    child: Text(
-                      'Balasan',
-                      style: TextStyle(color: own ? Colors.white70 : Colors.black54, fontSize: 12),
-                    ),
-                  ),
-                ),
-              if (msg['type'] == 'image' && (msg['attachment_url'] ?? '').toString().isNotEmpty)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.network(
-                    msg['attachment_url'].toString(),
-                    width: 220,
-                    height: 220,
-                    fit: BoxFit.cover,
-                  ),
-                )
-              else
-                Text(
-                  deleted ? 'Pesan dihapus' : content,
-                  style: TextStyle(
-                    color: own ? Colors.white : Colors.black87,
-                    fontSize: 16,
-                    fontStyle: deleted ? FontStyle.italic : FontStyle.normal,
-                  ),
-                ),
-              const SizedBox(height: 3),
-              Text(
-                DateFormat('HH:mm').format(created),
-                style: TextStyle(color: own ? Colors.white70 : Colors.black38, fontSize: 10),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class SettingsPage extends StatelessWidget {
-  final Map<String, dynamic> profile;
-
-  const SettingsPage({super.key, required this.profile});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Pengaturan')),
-      body: ListView(
-        children: [
-          ListTile(
-            leading: const Icon(Icons.person_outline),
-            title: const Text('Profil'),
-            subtitle: Text('@${profile['username'] ?? ''}'),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => EditProfilePage(profile: profile)),
-            ),
-          ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.logout, color: red),
-            title: const Text('Keluar', style: TextStyle(color: red)),
-            onTap: () => supabase.auth.signOut(),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class EditProfilePage extends StatefulWidget {
-  final Map<String, dynamic> profile;
-
-  const EditProfilePage({super.key, required this.profile});
-
-  @override
-  State<EditProfilePage> createState() => _EditProfilePageState();
-}
-
-class _EditProfilePageState extends State<EditProfilePage> {
-  late final TextEditingController name;
-  late final TextEditingController user;
-  late final TextEditingController bio;
-  XFile? photo;
-  bool busy = false;
-
-  @override
-  void initState() {
-    super.initState();
-    name = TextEditingController(text: widget.profile['display_name'] ?? '');
-    user = TextEditingController(text: widget.profile['username'] ?? '');
-    bio = TextEditingController(text: widget.profile['bio'] ?? '');
-  }
-
-  @override
-  void dispose() {
-    name.dispose();
-    user.dispose();
-    bio.dispose();
-    super.dispose();
-  }
-
-  Future<void> pick() async {
-    final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 85);
-    if (picked != null && mounted) setState(() => photo = picked);
-  }
-
-  Future<void> save() async {
-    setState(() => busy = true);
-    try {
-      String? url = widget.profile['avatar_url']?.toString();
-      if (photo != null) {
-        final path = '${supabase.auth.currentUser!.id}/avatar_${DateTime.now().millisecondsSinceEpoch}.jpg';
-        await supabase.storage.from('media').upload(
-          path,
-          File(photo!.path),
-          fileOptions: const FileOptions(upsert: true),
-        );
-        url = supabase.storage.from('media').getPublicUrl(path);
-      }
-
-      await supabase.from('profiles').update({
-        'display_name': name.text.trim(),
-        'username': user.text.trim().toLowerCase(),
-        'bio': bio.text.trim(),
-        'avatar_url': url,
-      }).eq('id', supabase.auth.currentUser!.id);
-
-      if (mounted) Navigator.pop(context);
-    } catch (_) {
-      if (mounted) {
-        setState(() => busy = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Gagal menyimpan profil.')),
-        );
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Edit profil')),
-      body: ListView(
-        padding: const EdgeInsets.all(22),
-        children: [
-          Center(
-            child: GestureDetector(
-              onTap: pick,
-              child: Avatar(
-                url: photo?.path ?? widget.profile['avatar_url'],
-                name: name.text,
-                size: 95,
-                local: photo != null,
-              ),
-            ),
-          ),
-          const SizedBox(height: 22),
-          TextField(
-            controller: name,
-            decoration: const InputDecoration(labelText: 'Nama'),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: user,
-            decoration: const InputDecoration(labelText: 'Username', prefixText: '@'),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: bio,
-            maxLines: 4,
-            decoration: const InputDecoration(labelText: 'Bio'),
-          ),
-          const SizedBox(height: 20),
-          FilledButton(
-            onPressed: busy ? null : save,
-            child: busy ? const CircularProgressIndicator() : const Text('Simpan perubahan'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class Avatar extends StatelessWidget {
-  final String? url;
-  final String? name;
-  final double size;
-  final bool local;
-
-  const Avatar({super.key, this.url, this.name, this.size = 52, this.local = false});
-
-  @override
-  Widget build(BuildContext context) {
-    final value = (name ?? '?').trim();
-    final letter = value.isEmpty ? '?' : value[0].toUpperCase();
-    ImageProvider<Object>? image;
-    if (url != null && url!.isNotEmpty) {
-      if (local) {
-        image = FileImage(File(url!));
+      final r = await http.post(endpoint('actions/runs/$id/cancel'), headers: headers).timeout(const Duration(seconds: 30));
+      if (r.statusCode == 202 || r.statusCode == 409) {
+        addLog('Permintaan pembatalan dikirim untuk run #$id.');
+        if (mounted) setState(() { busy = false; terminal = true; status = 'Build dibatalkan'; detail = 'Permintaan cancel dikirim ke GitHub Actions.'; });
       } else {
-        image = NetworkImage(url!);
+        _message('GitHub menolak pembatalan (${r.statusCode}): ${_apiMessage(r.body)}');
       }
-    }
-    return CircleAvatar(
-      radius: size / 2,
-      backgroundColor: const Color(0xFFFFE5E9),
-      backgroundImage: image,
-      child: image == null
-          ? Text(letter, style: TextStyle(color: red, fontWeight: FontWeight.w800, fontSize: size * .34))
-          : null,
-    );
+    } catch (e) { _message('Gagal membatalkan build: $e'); }
+    ticker?.cancel();
   }
+
+  Future<List<File>> _apkFiles() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final d = Directory('${dir.path}/flutter_cloud_builder');
+    if (!await d.exists()) return [];
+    return d.listSync().whereType<File>().where((f) => f.path.toLowerCase().endsWith('.apk')).toList();
+  }
+
+  Future<void> _showApks() async {
+    final files = await _apkFiles();
+    if (!mounted) return;
+    if (files.isEmpty) { _message('Belum ada APK. Jalankan build yang berhasil terlebih dahulu.'); return; }
+    showModalBottomSheet<void>(context: context, isScrollControlled: true, builder: (ctx) => SafeArea(child: Padding(
+      padding: const EdgeInsets.all(18), child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('APK tersimpan', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 10),
+        ...files.map((f) => ListTile(leading: const Icon(Icons.android, color: Colors.green), title: Text(f.uri.pathSegments.last), subtitle: Text(_size(f.lengthSync())), trailing: const Icon(Icons.install_mobile), onTap: () async { Navigator.pop(ctx); final result = await OpenFilex.open(f.path, type: 'application/vnd.android.package-archive'); if (result.type != ResultType.done && mounted) _message('Tidak bisa membuka installer: ${result.message}. Izinkan instalasi aplikasi dari sumber ini di pengaturan Android.'); })),
+      ]),
+    )));
+  }
+
+  Future<void> _openFailureZip() async {
+    if (failureZipPath == null) { _message('ZIP error belum tersedia.'); return; }
+    await OpenFilex.open(failureZipPath!, type: 'application/zip');
+  }
+
+  Future<void> _testConnection() async {
+    if (owner.text.trim().isEmpty || repo.text.trim().isEmpty || token.text.trim().isEmpty) { _message('Lengkapi owner, repository, dan token.'); return; }
+    try {
+      final r = await http.get(endpoint(''), headers: headers).timeout(const Duration(seconds: 20));
+      if (r.statusCode == 200) { await _saveSettings(); _message('GitHub terhubung ke $repoPath.'); }
+      else _message('GitHub menjawab ${r.statusCode}: ${_apiMessage(r.body)}');
+    } catch (e) { _message('Koneksi gagal: $e'); }
+  }
+
+  String _apiMessage(String body) {
+    try { final j = jsonDecode(body); return '${j['message'] ?? body}'; } catch (_) { return body.length > 300 ? body.substring(0, 300) : body; }
+  }
+  String _size(int b) => b < 1024 * 1024 ? '${(b / 1024).toStringAsFixed(1)} KB' : '${(b / (1024 * 1024)).toStringAsFixed(1)} MB';
+  String _clock(Duration d) => '${d.inHours.toString().padLeft(2, '0')}:${(d.inMinutes % 60).toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+  void _message(String m) { if (!mounted) return; ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), behavior: SnackBarBehavior.floating)); }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const Text('Flutter Cloud Builder', style: TextStyle(fontWeight: FontWeight.bold)), actions: [IconButton(tooltip: 'Daftar APK', onPressed: _showApks, icon: const Icon(Icons.folder_open))]),
+        body: ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 28), children: [
+          Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFF6254D8), Color(0xFF8A72EE)]), borderRadius: BorderRadius.circular(24)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Row(children: [Icon(Icons.cloud_upload_rounded, color: Colors.white, size: 38), SizedBox(width: 12), Expanded(child: Text('Build Flutter dari HP', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)))]),
+            const SizedBox(height: 8), const Text('Upload source → GitHub Actions → pantau proses → download APK atau ZIP error.', style: TextStyle(color: Colors.white, height: 1.4)),
+            const SizedBox(height: 16), Row(children: [const Icon(Icons.timer_outlined, color: Colors.white70), const SizedBox(width: 8), Text(_clock(elapsed), style: const TextStyle(color: Colors.white, fontSize: 26, fontFeatures: [])), const Spacer(), Text(phase, style: const TextStyle(color: Colors.white))]),
+            const SizedBox(height: 10), ClipRRect(borderRadius: BorderRadius.circular(10), child: LinearProgressIndicator(value: progress, minHeight: 7, backgroundColor: Colors.white24, color: Colors.white)),
+          ])),
+          const SizedBox(height: 18),
+          _section('1', 'File proyek Flutter'),
+          Card(child: ListTile(leading: const Icon(Icons.folder_zip, size: 34), title: Text(selected?.name ?? 'Pilih ZIP proyek Flutter'), subtitle: Text(selected == null ? 'Pencarian otomatis: pubspec.yaml + lib/main.dart di root atau folder bertingkat.' : '${_size(selected!.size)} • siap diunggah'), trailing: const Icon(Icons.chevron_right), onTap: busy ? null : _pickZip)),
+          const SizedBox(height: 18), _section('2', 'Koneksi GitHub'),
+          _field(owner, 'GitHub owner / username', 'diambil dari assets/github_config.json'),
+          const SizedBox(height: 10), _field(repo, 'Nama repository', 'diambil dari assets/github_config.json'),
+          const SizedBox(height: 10), _field(branch, 'Branch', 'main'),
+          const SizedBox(height: 10),
+          Card(child: ListTile(leading: const Icon(Icons.key), title: const Text('GitHub token dari JSON'), subtitle: Text(token.text.trim().isEmpty ? 'Belum diatur. Isi assets/github_config.json lalu build ulang APK.' : 'Token ditemukan di konfigurasi APK.'), trailing: Icon(token.text.trim().isEmpty ? Icons.warning_amber_rounded : Icons.check_circle, color: token.text.trim().isEmpty ? Colors.orange : Colors.green))),
+          const SizedBox(height: 8), const Text('Owner, repository, branch, dan token dibaca dari assets/github_config.json. Token yang ditanam di APK tetap bisa diekstrak; batasi izin dan masa berlakunya.', style: TextStyle(fontSize: 12, color: Colors.black54)),
+          const SizedBox(height: 10), OutlinedButton.icon(onPressed: busy ? null : _testConnection, icon: const Icon(Icons.link), label: const Text('Tes koneksi GitHub')),
+          const SizedBox(height: 18), _section('3', 'Proses build'),
+          Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(status, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 6), Text(detail),
+            if (runId != null) Padding(padding: const EdgeInsets.only(top: 8), child: SelectableText('GitHub Actions Run ID: $runId')),
+            const SizedBox(height: 14),
+            if (busy) SizedBox(width: double.infinity, child: FilledButton.icon(onPressed: _cancelBuild, icon: const Icon(Icons.cancel_outlined), label: const Text('Batalkan build')))
+            else SizedBox(width: double.infinity, child: FilledButton.icon(onPressed: _startBuild, icon: const Icon(Icons.rocket_launch), label: const Text('Mulai Build APK'))),
+            if (status.contains('berhasil')) ...[
+              const SizedBox(height: 10), SizedBox(width: double.infinity, child: FilledButton.tonalIcon(onPressed: _showApks, icon: const Icon(Icons.download), label: const Text('Download / Install APK'))),
+            ],
+            if (failureZipPath != null || status.contains('ZIP error')) ...[
+              const SizedBox(height: 10), SizedBox(width: double.infinity, child: OutlinedButton.icon(onPressed: _openFailureZip, icon: const Icon(Icons.archive), label: const Text('Buka ZIP diagnostik error'))),
+            ],
+          ]))),
+          const SizedBox(height: 18), _section('4', 'Log pemantauan'),
+          Card(child: Padding(padding: const EdgeInsets.all(12), child: logs.isEmpty ? const Text('Log akan muncul di sini saat proses berjalan.') : Column(crossAxisAlignment: CrossAxisAlignment.start, children: logs.take(25).map((l) => Padding(padding: const EdgeInsets.symmetric(vertical: 3), child: SelectableText(l, style: const TextStyle(fontFamily: 'monospace', fontSize: 11)))).toList()))),
+          const SizedBox(height: 14), const Text('Catatan: build berjalan di GitHub Actions, bukan di HP. Repository harus memiliki workflow yang disertakan dalam ZIP proyek ini. APK release ditandatangani debug untuk pengujian; untuk distribusi publik gunakan signing key sendiri.', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: Colors.black54)),
+        ]),
+      );
+
+  Widget _section(String number, String title) => Padding(padding: const EdgeInsets.only(bottom: 8), child: Row(children: [Container(width: 28, height: 28, alignment: Alignment.center, decoration: const BoxDecoration(color: Color(0xFFE6E2FF), shape: BoxShape.circle), child: Text(number, style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF5143BD)))), const SizedBox(width: 9), Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold))]));
+  Widget _field(TextEditingController c, String label, String hint) => TextField(controller: c, autocorrect: false, decoration: InputDecoration(labelText: label, hintText: hint));
 }

@@ -1,17 +1,20 @@
-name: chat_app
-version: 1.0.0+1
-description: Bright realtime Supabase chat app.
+name: flutter_cloud_builder
+description: Build Flutter projects into Android APKs with GitHub Actions, directly from Android.
 publish_to: 'none'
+version: 1.0.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: '>=3.3.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
-  supabase_flutter: ^2.10.0
-  image_picker: ^1.2.0
-  intl: ^0.20.2
+  http: ^1.2.2
+  file_picker: ^8.1.7
+  archive: ^3.6.1
+  path_provider: ^2.1.5
+  open_filex: ^4.6.0
+  shared_preferences: ^2.3.5
 
 dev_dependencies:
   flutter_test:
@@ -20,3 +23,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/build-flutter-apk.yml
+    - assets/github_config.json
